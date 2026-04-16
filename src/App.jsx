@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, List, BarChart3, Settings, Trash2, Calendar, User, X, ChevronDown } from 'lucide-react';
+import { Plus, List, BarChart3, Settings, Trash2, Calendar, User, X, ChevronDown, Pencil } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 // ============ СПРАВОЧНИКИ ============
@@ -180,23 +180,41 @@ function NewClientModal({ profiles, onClose, onCreate }) {
 }
 
 // ============ ЭКРАН 1: Форма ============
-function JobForm({ clients, profiles, onSave, onAddClient }) {
-  const [startDT, setStartDT] = useState(nowISO());
-  const [endDT, setEndDT] = useState(nowISO());
-  const [clientId, setClientId] = useState('studio');
-  const [orderNumber, setOrderNumber] = useState('');
-  const [car, setCar] = useState('');
-  const [complexId, setComplexId] = useState('');
-  const [elementIds, setElementIds] = useState([]);
-  const [share, setShare] = useState(1);
-  const [manualTotal, setManualTotal] = useState('');
-  const [comment, setComment] = useState('');
+function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient }) {
+  const isEdit = !!editJob;
+
+  const [startDT, setStartDT] = useState(editJob?.startDT || nowISO());
+  const [endDT, setEndDT] = useState(editJob?.endDT || nowISO());
+  const [clientId, setClientId] = useState(editJob?.clientId || 'studio');
+  const [orderNumber, setOrderNumber] = useState(editJob?.orderNumber || '');
+  const [car, setCar] = useState(editJob?.car || '');
+  const [complexId, setComplexId] = useState(editJob?.complexId || '');
+  const [elementIds, setElementIds] = useState(editJob?.elementIds || []);
+  const [share, setShare] = useState(editJob?.share ?? 1);
+  // Если в исходной записи цена ставилась вручную (не совпадает с расчётом по позициям) — подставим её
+  const initialManual = useMemo(() => {
+    if (!editJob) return '';
+    const p = profiles.find(pr => pr.id === editJob.priceProfileId);
+    const cp = p?.complex.find(c => c.id === editJob.complexId)?.price || 0;
+    const ep = (editJob.elementIds || []).reduce((s, id) => s + (p?.elements.find(e => e.id === id)?.price || 0), 0);
+    const calc = cp + ep;
+    return Math.round(calc) !== Math.round(editJob.baseTotal) ? String(editJob.baseTotal) : '';
+  }, [editJob, profiles]);
+  const [manualTotal, setManualTotal] = useState(initialManual);
+  const [comment, setComment] = useState(editJob?.comment || '');
   const [showModal, setShowModal] = useState(false);
 
   const client = clients.find(c => c.id === clientId);
   const profile = profiles.find(p => p.id === client?.priceProfileId) || profiles[0];
 
-  useEffect(() => { setComplexId(''); setElementIds([]); }, [clientId]);
+  // Сброс выбранных позиций при смене клиента — только в режиме создания.
+  // В режиме редактирования смена клиента так же сбрасывает (профиль другой → старые id невалидны).
+  const handleClientChange = (newId) => {
+    if (newId === clientId) return;
+    setClientId(newId);
+    setComplexId('');
+    setElementIds([]);
+  };
 
   const baseTotal = useMemo(() => {
     if (manualTotal !== '') return parseFloat(manualTotal) || 0;
@@ -210,20 +228,40 @@ function JobForm({ clients, profiles, onSave, onAddClient }) {
 
   const createClient = (name, baseId) => { const c = onAddClient(name, baseId); setClientId(c.id); setShowModal(false); };
 
+  const resetForm = () => {
+    setStartDT(nowISO()); setEndDT(nowISO()); setClientId('studio');
+    setOrderNumber(''); setCar(''); setComplexId(''); setElementIds([]);
+    setShare(1); setManualTotal(''); setComment('');
+  };
+
   const submit = () => {
     if (!car.trim()) { alert('Укажи авто'); return; }
-    onSave({
-      id: Date.now().toString(), startDT, endDT, clientId, orderNumber: orderNumber.trim(), car: car.trim(),
+    const payload = {
+      startDT, endDT, clientId, orderNumber: orderNumber.trim(), car: car.trim(),
       priceProfileId: client.priceProfileId, complexId: complexId || null, elementIds,
-      share, baseTotal, finalTotal, comment, createdAt: new Date().toISOString(),
-    });
-    setOrderNumber(''); setCar(''); setComplexId(''); setElementIds([]); setManualTotal(''); setComment(''); setShare(1);
+      share, baseTotal, finalTotal, comment,
+    };
+    if (isEdit) {
+      onUpdate({ ...editJob, ...payload, updatedAt: new Date().toISOString() });
+    } else {
+      onSave({ ...payload, id: Date.now().toString(), createdAt: new Date().toISOString() });
+      resetForm();
+    }
   };
 
   return (
     <div className="p-4 pb-24 space-y-5">
       {showModal && <NewClientModal profiles={profiles} onClose={() => setShowModal(false)} onCreate={createClient} />}
-      <h1 className="text-2xl font-bold text-slate-900">Новая работа</h1>
+
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold text-slate-900">
+          {isEdit ? 'Редактирование' : 'Новая работа'}
+        </h1>
+        {isEdit && (
+          <button onClick={onCancelEdit}
+            className="text-xs text-slate-500 underline">Отмена</button>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <div>
@@ -242,7 +280,7 @@ function JobForm({ clients, profiles, onSave, onAddClient }) {
         <label className="text-xs font-medium text-slate-500 mb-1 block">Заказчик</label>
         <div className="flex gap-2 flex-wrap">
           {clients.map(c => (
-            <button key={c.id} onClick={() => setClientId(c.id)}
+            <button key={c.id} onClick={() => handleClientChange(c.id)}
               className={`px-4 py-2.5 rounded-xl text-sm font-medium border transition
                 ${clientId === c.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-200'}`}>
               {c.name}
@@ -331,14 +369,14 @@ function JobForm({ clients, profiles, onSave, onAddClient }) {
 
       <button onClick={submit}
         className="w-full py-4 bg-emerald-600 text-white font-semibold rounded-2xl active:bg-emerald-700">
-        Сохранить работу
+        {isEdit ? 'Сохранить изменения' : 'Сохранить работу'}
       </button>
     </div>
   );
 }
 
 // ============ ЭКРАН 2: Список ============
-function JobList({ jobs, clients, profiles, onDelete }) {
+function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [carFilter, setCarFilter] = useState('');
@@ -402,8 +440,12 @@ function JobList({ jobs, clients, profiles, onDelete }) {
                 <User size={12} /> {cName(job.clientId)}
               </div>
             </div>
-            <button onClick={() => { if (confirm('Удалить?')) onDelete(job.id); }}
-              className="text-slate-300 hover:text-red-500 p-1 shrink-0"><Trash2 size={16} /></button>
+            <div className="flex gap-1 shrink-0">
+              <button onClick={() => onEdit(job.id)}
+                className="text-slate-300 hover:text-slate-700 p-1"><Pencil size={16} /></button>
+              <button onClick={() => { if (confirm('Удалить?')) onDelete(job.id); }}
+                className="text-slate-300 hover:text-red-500 p-1"><Trash2 size={16} /></button>
+            </div>
           </div>
           <div className="text-xs text-slate-500 flex items-center gap-1">
             <Calendar size={12} /> {fmtDT(job.startDT)} → {fmtDT(job.endDT)}
@@ -594,6 +636,7 @@ function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile })
 // ============ ROOT ============
 export default function App() {
   const [tab, setTab] = useState('new');
+  const [editingJobId, setEditingJobId] = useState(null);
   const [jobs, setJobs] = useState(() => load(KEYS.JOBS, []));
   const [clients, setClients] = useState(() => load(KEYS.CLIENTS, DEFAULT_CLIENTS));
   const [profiles, setProfiles] = useState(() => load(KEYS.PROFILES, [STUDIO_PRICE, DEALER_PRICE]));
@@ -636,7 +679,21 @@ export default function App() {
   }, []);
 
   const addJob = (job) => { const n = [...jobs, job]; setJobs(n); save(KEYS.JOBS, n); setTab('list'); };
-  const deleteJob = (id) => { const n = jobs.filter(j => j.id !== id); setJobs(n); save(KEYS.JOBS, n); };
+  const deleteJob = (id) => {
+    const n = jobs.filter(j => j.id !== id);
+    setJobs(n); save(KEYS.JOBS, n);
+    if (editingJobId === id) setEditingJobId(null);
+  };
+  const updateJob = (job) => {
+    const n = jobs.map(j => j.id === job.id ? job : j);
+    setJobs(n); save(KEYS.JOBS, n);
+    setEditingJobId(null);
+    setTab('list');
+  };
+  const startEdit = (id) => { setEditingJobId(id); setTab('new'); };
+  const cancelEdit = () => { setEditingJobId(null); setTab('list'); };
+
+  const editingJob = editingJobId ? jobs.find(j => j.id === editingJobId) : null;
 
   const addClient = (name, baseId) => {
     const base = profiles.find(p => p.id === baseId) || profiles[0];
@@ -668,8 +725,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 max-w-md mx-auto relative">
-      {tab === 'new' && <JobForm clients={clients} profiles={profiles} onSave={addJob} onAddClient={addClient} />}
-      {tab === 'list' && <JobList jobs={jobs} clients={clients} profiles={profiles} onDelete={deleteJob} />}
+      {tab === 'new' && (
+        <JobForm key={editingJob?.id || 'new'}
+          clients={clients} profiles={profiles}
+          editJob={editingJob}
+          onSave={addJob} onUpdate={updateJob} onCancelEdit={cancelEdit}
+          onAddClient={addClient} />
+      )}
+      {tab === 'list' && <JobList jobs={jobs} clients={clients} profiles={profiles}
+        onDelete={deleteJob} onEdit={startEdit} />}
       {tab === 'stats' && <Stats jobs={jobs} />}
       {tab === 'settings' && <SettingsScreen profiles={profiles} clients={clients}
         onUpdateProfile={updateProfile} onDeleteProfile={deleteProfile} />}
@@ -680,7 +744,10 @@ export default function App() {
             const Icon = t.icon;
             const active = tab === t.key;
             return (
-              <button key={t.key} onClick={() => setTab(t.key)}
+              <button key={t.key} onClick={() => {
+                if (editingJobId) setEditingJobId(null);
+                setTab(t.key);
+              }}
                 className={`py-3 flex flex-col items-center gap-1 transition ${active ? 'text-slate-900' : 'text-slate-400'}`}>
                 <Icon size={20} />
                 <span className="text-[10px] font-medium">{t.label}</span>
