@@ -184,6 +184,7 @@ function JobForm({ clients, profiles, onSave, onAddClient }) {
   const [startDT, setStartDT] = useState(nowISO());
   const [endDT, setEndDT] = useState(nowISO());
   const [clientId, setClientId] = useState('studio');
+  const [orderNumber, setOrderNumber] = useState('');
   const [car, setCar] = useState('');
   const [complexId, setComplexId] = useState('');
   const [elementIds, setElementIds] = useState([]);
@@ -212,11 +213,11 @@ function JobForm({ clients, profiles, onSave, onAddClient }) {
   const submit = () => {
     if (!car.trim()) { alert('Укажи авто'); return; }
     onSave({
-      id: Date.now().toString(), startDT, endDT, clientId, car: car.trim(),
+      id: Date.now().toString(), startDT, endDT, clientId, orderNumber: orderNumber.trim(), car: car.trim(),
       priceProfileId: client.priceProfileId, complexId: complexId || null, elementIds,
       share, baseTotal, finalTotal, comment, createdAt: new Date().toISOString(),
     });
-    setCar(''); setComplexId(''); setElementIds([]); setManualTotal(''); setComment(''); setShare(1);
+    setOrderNumber(''); setCar(''); setComplexId(''); setElementIds([]); setManualTotal(''); setComment(''); setShare(1);
   };
 
   return (
@@ -253,6 +254,13 @@ function JobForm({ clients, profiles, onSave, onAddClient }) {
           </button>
         </div>
         <p className="text-xs text-slate-400 mt-1.5">Прайс: <span className="font-medium text-slate-600">{profile?.name}</span></p>
+      </div>
+
+      <div>
+        <label className="text-xs font-medium text-slate-500 mb-1 block">Заказ-наряд №</label>
+        <input type="text" inputMode="text" value={orderNumber} onChange={e => setOrderNumber(e.target.value)}
+          placeholder="Например, ЗН-2026-0142"
+          className="w-full px-3 py-3 rounded-xl border border-slate-200 bg-white text-slate-900 text-sm" />
       </div>
 
       <div>
@@ -381,14 +389,21 @@ function JobList({ jobs, clients, profiles, onDelete }) {
       ) : filtered.map(job => (
         <div key={job.id} className="bg-white rounded-2xl p-4 border border-slate-200 space-y-2">
           <div className="flex justify-between items-start">
-            <div>
-              <div className="font-semibold text-slate-900">{job.car}</div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="font-semibold text-slate-900">{job.car}</div>
+                {job.orderNumber && (
+                  <span className="text-[11px] font-medium px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md">
+                    № {job.orderNumber}
+                  </span>
+                )}
+              </div>
               <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
                 <User size={12} /> {cName(job.clientId)}
               </div>
             </div>
             <button onClick={() => { if (confirm('Удалить?')) onDelete(job.id); }}
-              className="text-slate-300 hover:text-red-500 p-1"><Trash2 size={16} /></button>
+              className="text-slate-300 hover:text-red-500 p-1 shrink-0"><Trash2 size={16} /></button>
           </div>
           <div className="text-xs text-slate-500 flex items-center gap-1">
             <Calendar size={12} /> {fmtDT(job.startDT)} → {fmtDT(job.endDT)}
