@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg: #eef1f5;
+  --panel: #fff;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --ink-3: #94a3b8;
+  --line: #e2e8f0;
+  --line-2: #cbd5e1;
+  --soft: #f1f5f9;
+  --accent: #12a150;
+  --accent-soft: #dcf5e6;
+  --accent-dark: #0b6b35;
+  --danger: #ef4444;
+  --danger-soft: #fef2f2;
+  --warn: #f59e0b;
+  --warn-soft: #fefce8;
+  --radius: 17px;
+  --shadow-card: 0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+  --shadow-lg: 0 10px 25px -8px rgba(15,23,42,.15);
+}
+
 html, body {
   overscroll-behavior-y: none;
   -webkit-tap-highlight-color: transparent;
@@ -9,16 +30,114 @@ html, body {
 }
 
 body {
-  background: #f8fafc;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg);
+  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: var(--ink);
 }
 
-/* safe-area для iPhone с нотчем */
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* убираем стрелки у number input на мобиле */
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.label-upper {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+/* Unified input style */
+.wt-input {
+  height: 40px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--ink);
+  width: 100%;
+  transition: border-color .15s, box-shadow .15s;
+}
+.wt-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.wt-input::placeholder { color: var(--ink-3); }
+
+textarea.wt-input {
+  height: auto;
+  min-height: 56px;
+  padding: 10px 12px;
+  resize: none;
+}
+
+select.wt-input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+
+/* Card with subtle shadow */
+.wt-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+/* Summary gradient card */
+.summary-card {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 14px;
+  box-shadow: 0 8px 24px -8px rgba(15,23,42,.35);
+}
+
+/* Accent gradient button */
+.btn-accent {
+  background: linear-gradient(135deg, #12a150 0%, #0d8a43 100%);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 700;
+  font-size: 14px;
+  padding: 14px 0;
+  width: 100%;
+  cursor: pointer;
+  transition: transform .1s, box-shadow .15s;
+  box-shadow: 0 4px 12px -4px rgba(18,161,80,.4);
+}
+.btn-accent:active {
+  transform: scale(0.98);
+}
+
+/* Danger ghost button */
+.btn-danger-ghost {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-danger-ghost:active {
+  background: var(--danger-soft);
+}
+
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -26,4 +145,13 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 input[type="number"] {
   -moz-appearance: textfield;
+}
+
+/* Smooth page transitions */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-in {
+  animation: slideUp .25s ease-out;
 }
