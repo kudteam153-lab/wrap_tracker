@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, List, BarChart3, Settings, Trash2, Calendar, User, X, ChevronDown, Pencil } from 'lucide-react';
+import { Plus, List, BarChart3, Settings, Trash2, Calendar, User, X, ChevronDown, Pencil, Camera, Image as ImageIcon } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 // ============ СПРАВОЧНИКИ ============
@@ -104,6 +104,23 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 const fmt = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(n || 0)) + ' ₽';
 const nowISO = () => { const d = new Date(); d.setSeconds(0, 0); return d.toISOString().slice(0, 16); };
 const fmtDT = (iso) => { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }); };
+
+const compressImage = (file, maxW = 800, quality = 0.7) => new Promise((resolve) => {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new window.Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w = img.width, h = img.height;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+});
 
 // ============ Combobox авто ============
 function CarCombobox({ value, onChange, customCars = [], onAddCar }) {
@@ -212,6 +229,10 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const [endDT, setEndDT] = useState(editJob?.endDT || nowISO());
   const [clientId, setClientId] = useState(editJob?.clientId || 'studio');
   const [orderNumber, setOrderNumber] = useState(editJob?.orderNumber || '');
+  const [photos, setPhotos] = useState(editJob?.photos || []);
+  const [showPhotoMenu, setShowPhotoMenu] = useState(false);
+  const cameraRef = useRef(null);
+  const galleryRef = useRef(null);
   const [car, setCar] = useState(editJob?.car || '');
   const [complexId, setComplexId] = useState(editJob?.complexId || '');
   const [elementCounts, setElementCounts] = useState(editJob?.elementCounts || editJob?.elementIds?.reduce((m, id) => ({ ...m, [id]: (m[id] || 0) + 1 }), {}) || {});
@@ -258,24 +279,35 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const finalTotal = manualTotal !== '' ? (parseFloat(manualTotal) || 0) : calcWithShare;
   const baseTotal = manualTotal !== '' ? (parseFloat(manualTotal) || 0) : calcTotal;
 
-  const cycleEl = (id) => setElementCounts(prev => {
-    const c = (prev[id] || 0) + 1;
-    if (c > 3) { const { [id]: _, ...rest } = prev; return rest; }
+  const incEl = (id) => setElementCounts(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+  const decEl = (id) => setElementCounts(prev => {
+    const c = (prev[id] || 0) - 1;
+    if (c <= 0) { const { [id]: _, ...rest } = prev; return rest; }
     return { ...prev, [id]: c };
   });
+
+  const handlePhoto = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const compressed = await Promise.all(files.map(f => compressImage(f)));
+    setPhotos(prev => [...prev, ...compressed].slice(0, 5));
+    e.target.value = '';
+    setShowPhotoMenu(false);
+  };
+  const removePhoto = (idx) => setPhotos(prev => prev.filter((_, i) => i !== idx));
 
   const createClient = (name, baseId) => { const c = onAddClient(name, baseId); setClientId(c.id); setShowModal(false); };
 
   const resetForm = () => {
     setStartDT(nowISO()); setEndDT(nowISO()); setClientId('studio');
-    setOrderNumber(''); setCar(''); setComplexId(''); setElementCounts({});
+    setOrderNumber(''); setPhotos([]); setCar(''); setComplexId(''); setElementCounts({});
     setShare(1); setCustomPercent(''); setManualTotal(''); setComment('');
   };
 
   const submit = () => {
     if (!car.trim()) { alert('Укажи авто'); return; }
     const payload = {
-      startDT, endDT, clientId, orderNumber: orderNumber.trim(), car: car.trim(),
+      startDT, endDT, clientId, orderNumber: orderNumber.trim(), photos, car: car.trim(),
       priceProfileId: client.priceProfileId, complexId: complexId || null, elementCounts,
       share, manualTotal: manualTotal !== '' ? parseFloat(manualTotal) : null,
       baseTotal: calcTotal, finalTotal, comment,
@@ -335,9 +367,51 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
       <div>
         <label className="label-upper">Заказ-наряд №</label>
-        <input type="text" inputMode="text" value={orderNumber} onChange={e => setOrderNumber(e.target.value)}
-          placeholder="Например, ЗН-2026-0142"
-          className="wt-input" />
+        <div className="flex gap-2 relative">
+          <input type="text" inputMode="text" value={orderNumber} onChange={e => setOrderNumber(e.target.value)}
+            placeholder="ЗН-2026-0142"
+            className="wt-input flex-1" />
+          {photos.length < 5 && (
+            <button onClick={() => setShowPhotoMenu(!showPhotoMenu)}
+              className="w-10 h-10 rounded-xl border border-slate-200 bg-white flex items-center justify-center text-slate-400 hover:text-emerald-600 hover:border-emerald-400 transition shrink-0">
+              <Camera size={20} />
+            </button>
+          )}
+          {showPhotoMenu && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowPhotoMenu(false)} />
+              <div className="absolute right-0 top-12 z-20 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden" style={{minWidth: 200}}>
+                <button onClick={() => { cameraRef.current?.click(); }}
+                  className="w-full px-4 py-3 text-left text-sm font-semibold flex items-center gap-3 hover:bg-slate-50 transition">
+                  <Camera size={18} className="text-emerald-600" />
+                  Камера
+                </button>
+                <div className="border-t border-slate-100" />
+                <button onClick={() => { galleryRef.current?.click(); }}
+                  className="w-full px-4 py-3 text-left text-sm font-semibold flex items-center gap-3 hover:bg-slate-50 transition">
+                  <ImageIcon size={18} className="text-emerald-600" />
+                  Выбрать на устройстве
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handlePhoto} className="hidden" />
+        <input ref={galleryRef} type="file" accept="image/*" multiple onChange={handlePhoto} className="hidden" />
+
+        {photos.length > 0 && (
+          <div className="flex gap-2 items-center mt-2 overflow-x-auto">
+            {photos.map((src, i) => (
+              <div key={i} className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 shrink-0">
+                <img src={src} alt="" className="w-full h-full object-cover" />
+                <button onClick={() => removePhoto(i)}
+                  className="absolute top-0 right-0 w-5 h-5 bg-black/60 text-white flex items-center justify-center rounded-bl-lg"
+                  style={{fontSize: 12, lineHeight: 1}}>×</button>
+              </div>
+            ))}
+            <span className="text-xs text-slate-400 shrink-0">{photos.length}/5</span>
+          </div>
+        )}
       </div>
 
       <div>
@@ -360,22 +434,32 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
           {profile?.elements.map(el => {
             const count = elementCounts[el.id] || 0;
             return (
-              <button key={el.id} onClick={() => cycleEl(el.id)}
-                style={{minHeight: 46}}
+              <div key={el.id}
+                onClick={() => { if (count === 0) incEl(el.id); }}
+                style={{minHeight: 52}}
                 className={`relative rounded-xl p-2 text-left text-xs font-semibold border transition flex flex-col justify-between select-none
                   ${count > 0
                     ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                    : 'bg-white text-slate-600 border-slate-200'}`}>
+                    : 'bg-white text-slate-600 border-slate-200 cursor-pointer active:bg-slate-50'}`}>
                 <span>{el.name}</span>
                 <span className={`font-mono text-xs font-medium ${count > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
                   {new Intl.NumberFormat('ru-RU').format(el.price)}
                 </span>
                 {count > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center border-2 border-white" style={{fontSize:10}}>
-                    {count}
-                  </span>
+                  <>
+                    <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-emerald-600 text-white font-extrabold flex items-center justify-center border-2 border-white" style={{fontSize:10}}>
+                      {count}
+                    </span>
+                    <div className="flex items-center justify-between mt-1 pt-1 border-t border-emerald-200">
+                      <button onClick={(e) => { e.stopPropagation(); decEl(el.id); }}
+                        className="w-6 h-6 rounded-md bg-white border border-emerald-300 text-emerald-700 flex items-center justify-center font-bold" style={{fontSize:14, lineHeight:1}}>−</button>
+                      <span className="font-mono font-bold" style={{fontSize:13}}>{count}</span>
+                      <button onClick={(e) => { e.stopPropagation(); incEl(el.id); }}
+                        className="w-6 h-6 rounded-md bg-emerald-600 text-white flex items-center justify-center font-bold" style={{fontSize:14, lineHeight:1}}>+</button>
+                    </div>
+                  </>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -563,6 +647,13 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
                     {cxName(job) && <div className="text-xs text-slate-600">• {cxName(job)}</div>}
                     {elNames(job).length > 0 && <div className="text-xs text-slate-600">• {elNames(job).join(', ')}</div>}
                     {job.comment && <div className="text-xs text-slate-400 italic bg-slate-100 p-2 rounded-lg">{job.comment}</div>}
+                    {job.photos?.length > 0 && (
+                      <div className="flex gap-1.5 overflow-x-auto py-1">
+                        {job.photos.map((src, i) => (
+                          <img key={i} src={src} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-200 shrink-0" />
+                        ))}
+                      </div>
+                    )}
                     <div className="flex justify-between items-center pt-1.5 border-t border-slate-200">
                       <span className="text-xs text-slate-400 font-mono">{fmtDT(job.startDT)}</span>
                       <div className="text-right">
