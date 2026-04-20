@@ -535,6 +535,7 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [carFilter, setCarFilter] = useState('');
+  const [viewPhoto, setViewPhoto] = useState(null); // { photos: [], index: 0 }
 
   const uniqueCars = useMemo(() => [...new Set(jobs.map(j => j.car))].sort(), [jobs]);
 
@@ -650,7 +651,8 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
                     {job.photos?.length > 0 && (
                       <div className="flex gap-1.5 overflow-x-auto py-1">
                         {job.photos.map((src, i) => (
-                          <img key={i} src={src} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-200 shrink-0" />
+                          <img key={i} src={src} alt="" onClick={() => setViewPhoto({ photos: job.photos, index: i })}
+                            className="w-12 h-12 rounded-lg object-cover border border-slate-200 shrink-0 cursor-pointer active:opacity-70" />
                         ))}
                       </div>
                     )}
@@ -670,6 +672,28 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
           ))}
         </>);
       })()}
+
+      {viewPhoto && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center"
+          onClick={() => setViewPhoto(null)}>
+          <button className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/20 text-white flex items-center justify-center text-xl font-bold"
+            onClick={() => setViewPhoto(null)}>×</button>
+
+          <img src={viewPhoto.photos[viewPhoto.index]} alt=""
+            className="max-w-full max-h-[80vh] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()} />
+
+          {viewPhoto.photos.length > 1 && (
+            <div className="flex items-center gap-4 mt-4">
+              <button onClick={(e) => { e.stopPropagation(); setViewPhoto(v => ({ ...v, index: Math.max(0, v.index - 1) })); }}
+                className={`w-10 h-10 rounded-full bg-white/20 text-white flex items-center justify-center text-lg font-bold ${viewPhoto.index === 0 ? 'opacity-30' : ''}`}>‹</button>
+              <span className="text-white/70 text-sm font-mono">{viewPhoto.index + 1} / {viewPhoto.photos.length}</span>
+              <button onClick={(e) => { e.stopPropagation(); setViewPhoto(v => ({ ...v, index: Math.min(v.photos.length - 1, v.index + 1) })); }}
+                className={`w-10 h-10 rounded-full bg-white/20 text-white flex items-center justify-center text-lg font-bold ${viewPhoto.index === viewPhoto.photos.length - 1 ? 'opacity-30' : ''}`}>›</button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
