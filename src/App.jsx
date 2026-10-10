@@ -120,10 +120,20 @@ const groupBySection = (items) => items.reduce((groups, it) => {
 }, []);
 
 // Снимок позиций в работу: после замены прайса старые работы сохраняют расшифровку
-const jobLines = ({ complexId, complexPrice, elementCounts = {}, elementPrices = {} }, profile) => {
+// Раньше в работе был один complexId/complexPrice — приводим к списку
+const jobComplexes = (job) => ({
+  ids: job.complexIds || (job.complexId ? [job.complexId] : []),
+  prices: job.complexPrices || (job.complexId && job.complexPrice != null ? { [job.complexId]: job.complexPrice } : {}),
+});
+
+const jobLines = (job, profile) => {
+  const { elementCounts = {}, elementPrices = {} } = job;
+  const { ids, prices } = jobComplexes(job);
   const lines = [];
-  const cx = profile?.complex.find(c => c.id === complexId);
-  if (cx) lines.push({ kind: 'complex', name: itemLabel(cx), qty: 1, price: complexPrice ?? cx.price });
+  for (const id of ids) {
+    const cx = profile?.complex.find(c => c.id === id);
+    if (cx) lines.push({ kind: 'complex', name: itemLabel(cx), qty: 1, price: prices[id] ?? cx.price });
+  }
   for (const [id, qty] of Object.entries(elementCounts)) {
     const el = profile?.elements.find(e => e.id === id);
     if (el && qty > 0) lines.push({ kind: 'element', name: itemLabel(el), qty, price: elementPrices[id] ?? el.price });
@@ -311,10 +321,10 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const cameraRef = useRef(null);
   const galleryRef = useRef(null);
   const [car, setCar] = useState(editJob?.car || '');
-  const [complexId, setComplexId] = useState(editJob?.complexId || '');
+  const [complexIds, setComplexIds] = useState(() => editJob ? jobComplexes(editJob).ids : []);
   const [elementCounts, setElementCounts] = useState(editJob?.elementCounts || editJob?.elementIds?.reduce((m, id) => ({ ...m, [id]: (m[id] || 0) + 1 }), {}) || {});
   // Цена за работу, если отличается от прайса (диапазоны): '' / отсутствие ключа = цена из прайса
-  const [complexPrice, setComplexPrice] = useState(editJob?.complexPrice != null ? String(editJob.complexPrice) : '');
+  const [complexPrices, setComplexPrices] = useState(() => editJob ? jobComplexes(editJob).prices : {});
   const [elementPrices, setElementPrices] = useState(editJob?.elementPrices || {});
   const [elSearch, setElSearch] = useState('');
   const [openSection, setOpenSection] = useState(null);
@@ -330,7 +340,7 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const handleClientChange = (newId) => {
     if (newId === clientId) return;
     setClientId(newId);
-    setComplexId(''); setComplexPrice('');
+    setComplexIds([]); setComplexPrices({});
     setElementCounts({}); setElementPrices({});
   };
 
@@ -348,8 +358,17 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   };
 
   const elPrice = (el) => elementPrices[el.id] ?? el.price;
-  const selectedComplex = profile?.complex.find(c => c.id === complexId);
-  const complexPriceNum = complexPrice !== '' ? (parseFloat(complexPrice) || 0) : null;
+  const selectedComplexes = complexIds.map(id => profile?.complex.find(c => c.id === id)).filter(Boolean);
+  const complexSubtotal = selectedComplexes.reduce((s, c) => s + (complexPrices[c.id] ?? c.price), 0);
+  const addComplex = (id) => { if (id && !complexIds.includes(id)) setComplexIds([...complexIds, id]); };
+  const removeComplex = (id) => {
+    setComplexIds(complexIds.filter(x => x !== id));
+    const { [id]: _, ...rest } = complexPrices; setComplexPrices(rest);
+  };
+  const setCxPrice = (id, val) => setComplexPrices(prev => {
+    if (val === '') { const { [id]: _, ...rest } = prev; return rest; }
+    return { ...prev, [id]: parseFloat(val) || 0 };
+  });
 
   const elementsSubtotal = useMemo(() => {
     return Object.entries(elementCounts).reduce((s, [id, cnt]) => {
@@ -360,13 +379,12 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
   // Работа, сохранённая по старому прайсу: её позиций уже нет — считаем по снимку, пока не выбрано новое
   const hasKnownElements = Object.keys(elementCounts).some(id => profile?.elements.some(e => e.id === id));
-  const legacyLines = isEdit && editJob.lines?.length && !selectedComplex && !hasKnownElements ? editJob.lines : null;
+  const legacyLines = isEdit && editJob.lines?.length && !selectedComplexes.length && !hasKnownElements ? editJob.lines : null;
 
   const calcTotal = useMemo(() => {
     if (legacyLines) return legacyLines.reduce((s, l) => s + l.price * l.qty, 0);
-    const cp = selectedComplex ? (complexPriceNum ?? selectedComplex.price) : 0;
-    return cp + elementsSubtotal;
-  }, [legacyLines, selectedComplex, complexPriceNum, elementsSubtotal]);
+    return complexSubtotal + elementsSubtotal;
+  }, [legacyLines, complexSubtotal, elementsSubtotal]);
 
   const setElPrice = (id, val) => setElementPrices(prev => {
     if (val === '') { const { [id]: _, ...rest } = prev; return rest; }
@@ -401,8 +419,8 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   // Заполнение формы ответом агента: перезаписываем только то, что он распознал
   const applyParsed = (r) => {
     setClientId(r.clientId);
-    setComplexId(r.complexId);
-    setComplexPrice(r.complexPrice != null ? String(r.complexPrice) : '');
+    setComplexIds(r.complexIds);
+    setComplexPrices(r.complexPrices);
     setElementCounts(r.elementCounts);
     setElementPrices(r.elementPrices);
     if (r.car) setCar(r.car);
@@ -420,7 +438,7 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
   const resetForm = () => {
     setStartDT(nowISO()); setEndDT(nowISO()); setClientId('studio');
-    setOrderNumber(''); setPhotos([]); setCar(''); setComplexId(''); setComplexPrice('');
+    setOrderNumber(''); setPhotos([]); setCar(''); setComplexIds([]); setComplexPrices({});
     setElementCounts({}); setElementPrices({}); setElSearch(''); setOpenSection(null);
     setShare(1); setCustomPercent(''); setManualTotal(''); setComment('');
   };
@@ -429,9 +447,9 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
     if (!car.trim()) { alert('Укажи авто'); return; }
     const payload = {
       startDT, endDT, clientId, orderNumber: orderNumber.trim(), photos, car: car.trim(),
-      priceProfileId: client.priceProfileId, complexId: complexId || null, elementCounts,
-      complexPrice: selectedComplex ? complexPriceNum : null, elementPrices,
-      lines: legacyLines || jobLines({ complexId, complexPrice: complexPriceNum, elementCounts, elementPrices }, profile),
+      priceProfileId: client.priceProfileId, complexId: null, complexPrice: null,
+      complexIds: selectedComplexes.map(c => c.id), complexPrices, elementCounts, elementPrices,
+      lines: legacyLines || jobLines({ complexIds, complexPrices, elementCounts, elementPrices }, profile),
       share, manualTotal: manualTotal !== '' ? parseFloat(manualTotal) : null,
       baseTotal: calcTotal, finalTotal, comment,
     };
@@ -548,24 +566,35 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
       </div>
 
       <div>
-        <label className="label-upper">Комплекс работ</label>
-        <select value={complexId} onChange={e => { setComplexId(e.target.value); setComplexPrice(''); }}
-          className="wt-input">
-          <option value="">— не выбрано —</option>
-          {groupBySection(profile?.complex || []).map(g => (
+        <label className="label-upper">Комплексы работ</label>
+        {selectedComplexes.length > 0 && (
+          <div className="wt-card p-2 mb-2">
+            {selectedComplexes.map((c, i) => (
+              <div key={c.id} className={`flex items-center gap-2 py-2 ${i > 0 ? 'border-t border-dashed border-slate-200' : ''}`}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold">{itemLabel(c)}</div>
+                  {(c.note || hasRange(c)) && (
+                    <div className="text-xs text-slate-400">{hasRange(c) && <span className="font-mono">{fmtRange(c)} </span>}{c.note}</div>
+                  )}
+                </div>
+                <input type="number" value={complexPrices[c.id] ?? ''} onChange={e => setCxPrice(c.id, e.target.value)}
+                  placeholder={String(c.price)}
+                  className="wt-input text-xs font-mono text-right" style={{ width: 84, height: 32 }} />
+                <button onClick={() => removeComplex(c.id)} className="text-slate-400 hover:text-red-500 p-1 shrink-0">
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <select value="" onChange={e => addComplex(e.target.value)} className="wt-input">
+          <option value="">{selectedComplexes.length ? '+ добавить ещё комплекс' : '— выбрать комплекс —'}</option>
+          {groupBySection((profile?.complex || []).filter(c => !complexIds.includes(c.id))).map(g => (
             <optgroup key={g.section} label={g.section}>
               {g.items.map(c => <option key={c.id} value={c.id}>{c.name} — {fmtRange(c)} ₽</option>)}
             </optgroup>
           ))}
         </select>
-        {selectedComplex && (
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-xs text-slate-400 flex-1">{selectedComplex.note || (hasRange(selectedComplex) ? `Прайс: ${fmtRange(selectedComplex)} ₽` : 'Цена')}</span>
-            <input type="number" value={complexPrice} onChange={e => setComplexPrice(e.target.value)}
-              placeholder={String(selectedComplex.price)}
-              className="wt-input text-sm font-mono text-right" style={{ width: 110 }} />
-          </div>
-        )}
       </div>
 
       <div>
@@ -735,7 +764,9 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
   }, [jobs, from, to, carFilter]);
 
   const cName = (id) => clients.find(c => c.id === id)?.name || '—';
-  const cxName = (j) => j.lines ? j.lines.find(l => l.kind === 'complex')?.name : profiles.find(p => p.id === j.priceProfileId)?.complex.find(c => c.id === j.complexId)?.name;
+  const cxName = (j) => j.lines
+    ? j.lines.filter(l => l.kind === 'complex').map(l => l.name).join(', ')
+    : (cx => cx && itemLabel(cx))(profiles.find(p => p.id === j.priceProfileId)?.complex.find(c => c.id === j.complexId));
   const elNames = (j) => {
     if (j.lines) return j.lines.filter(l => l.kind === 'element').map(l => l.qty > 1 ? `${l.name} ×${l.qty}` : l.name);
     const p = profiles.find(pr => pr.id === j.priceProfileId);
@@ -743,7 +774,8 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
       return Object.entries(j.elementCounts)
         .filter(([, cnt]) => cnt > 0)
         .map(([id, cnt]) => {
-          const name = p?.elements.find(e => e.id === id)?.name;
+          const el = p?.elements.find(e => e.id === id);
+          const name = el && itemLabel(el);
           return name ? (cnt > 1 ? `${name} ×${cnt}` : name) : null;
         }).filter(Boolean);
     }

@@ -8,13 +8,13 @@ const MODEL = 'claude-sonnet-5-5';
 const SYSTEM = `Ты помощник оклейщика авто. Мастер надиктовал, что сделал. Разложи фразу по полям заказ-наряда.
 
 Правила:
-- clientId, complexId и id элементов бери ТОЛЬКО из переданных справочников. Элементы и комплексы ищи в прайсе выбранного заказчика.
+- clientId, id комплексов и id элементов бери ТОЛЬКО из переданных справочников. Элементы и комплексы ищи в прайсе выбранного заказчика.
 - Если заказчик не назван, clientId = "studio".
 - Элементы считай поштучно: «два крыла» → count 2, «обе передние двери» → 2. Если в прайсе одно общее «Крыло», а сказано «переднее и заднее» — это 2 штуки этого элемента.
 - Позиции сгруппированы по разделам (section), в note — что входит в пакет. Учитывай раздел: «фары» в разделе «Оклейка фар пленкой» и «Бронирование фар» — разные услуги.
-- Если сказано «полная оклейка», «чёрный глянец минимальный», «пакет 2» и т.п. и в прайсе есть подходящий комплекс — ставь complexId, а элементы, входящие в него, не дублируй. Комплекс в работе только один: если подходят два, ставь основной, второй упомяни в notes.
+- Если сказано «полная оклейка», «чёрный глянец минимальный», «пакет 2» и т.п. и в прайсе есть подходящий комплекс — добавь его в complexes, а элементы, входящие в него, не дублируй. Комплексов в работе может быть несколько («полная оклейка и чёрный глянец минимальный» — два).
 - Если у полной оклейки есть варианты по классу авто (седан/кроссовер/микроавтобус), выбирай по названному авто.
-- Цена: у позиции price — нижняя граница, priceMax — верхняя (если есть). Если мастер назвал цену конкретной позиции («бампер за 4500») — запиши её в price этого элемента или в complexPrice. Не назвал — 0, тогда возьмётся цена из прайса.
+- Цена: у позиции price — нижняя граница, priceMax — верхняя (если есть). Если мастер назвал цену конкретной позиции («бампер за 4500») — запиши её в price этого элемента или комплекса. Не назвал — 0, тогда возьмётся цена из прайса.
 - car: марка и модель как в каталоге («камри» → «Toyota Camry»). Если авто нет в каталоге — запиши как сказано, с заглавной буквы.
 - share: доля мастера дробью. «пополам», «на двоих», «50 на 50» → 0.5; «на троих» → 0.333; «один», «сам» → 1; «70 процентов» → 0.7. Не сказано → 0.
 - manualTotal: только если мастер явно назвал итоговую сумму за всю работу («за всё 15 тысяч»). Иначе 0.
@@ -27,12 +27,19 @@ const SYSTEM = `Ты помощник оклейщика авто. Мастер 
 const schema = (clientIds) => ({
   type: 'object',
   additionalProperties: false,
-  required: ['car', 'clientId', 'complexId', 'complexPrice', 'elements', 'share', 'manualTotal', 'startDT', 'endDT', 'orderNumber', 'comment', 'notes'],
+  required: ['car', 'clientId', 'complexes', 'elements', 'share', 'manualTotal', 'startDT', 'endDT', 'orderNumber', 'comment', 'notes'],
   properties: {
     car: { type: 'string' },
     clientId: { type: 'string', enum: clientIds },
-    complexId: { type: 'string', description: 'id комплекса из прайса заказчика или ""' },
-    complexPrice: { type: 'number', description: 'цена комплекса, если названа, иначе 0' },
+    complexes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'price'],
+        properties: { id: { type: 'string' }, price: { type: 'number' } },
+      },
+    },
     elements: {
       type: 'array',
       items: {
@@ -101,8 +108,13 @@ function sanitize(r, clients, profiles) {
   const profile = profiles.find(p => p.id === client.priceProfileId);
   const notes = r.notes ? [r.notes] : [];
 
-  const complexId = profile?.complex.some(c => c.id === r.complexId) ? r.complexId : '';
-  if (r.complexId && !complexId) notes.push(`комплекс не найден в прайсе «${profile?.name}»`);
+  const complexIds = [], complexPrices = {};
+  for (const { id, price } of r.complexes || []) {
+    if (!profile?.complex.some(c => c.id === id)) { notes.push(`один из комплексов не найден в прайсе «${profile?.name}»`); continue; }
+    if (complexIds.includes(id)) continue;
+    complexIds.push(id);
+    if (price > 0) complexPrices[id] = price;
+  }
 
   const elementCounts = {}, elementPrices = {};
   for (const { id, count, price } of r.elements || []) {
@@ -117,8 +129,8 @@ function sanitize(r, clients, profiles) {
   return {
     clientId: client.id,
     car: r.car?.trim() || '',
-    complexId,
-    complexPrice: complexId && r.complexPrice > 0 ? r.complexPrice : null,
+    complexIds,
+    complexPrices,
     elementCounts,
     elementPrices,
     share: r.share > 0 && r.share <= 1 ? r.share : null,
