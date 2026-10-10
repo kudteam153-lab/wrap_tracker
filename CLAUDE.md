@@ -37,6 +37,8 @@ Almost all of the app is in one file, `src/App.jsx`, which has sections marked w
 
 `src/agent.js` exports `parseJob(text, { apiKey, clients, profiles, cars })`. It calls the Claude API straight from the browser (`dangerouslyAllowBrowser`) with structured JSON output, then sanitizes the result against the selected client's price list, so element and complex ids that don't exist there are dropped and reported in `notes`. Speech-to-text is the phone keyboard's own dictation; the app only gets text. `VoiceInput` in `App.jsx` lazy-imports the module so the SDK isn't in the main bundle, and `JobForm.applyParsed` writes the result into the form for the user to review. Nothing is saved automatically. The user's API key is stored in `localStorage` under `anthropic_api_key` and set in Settings.
 
+`parseStatsQuery(text, { apiKey, clients })` in the same module turns a spoken stats request («статистика с 1 по 15 прошлого месяца, студия») into `{ from, to, clientIds, label }`; `Stats` applies it as a filter and computes everything locally, so job data is never sent to the API. A job-form voice phrase starting with «статистика» is routed to the Stats tab via `App`'s `statsRequest`.
+
 ### Data model
 
 - `localStorage` keys: `jobs_v2`, `clients_v2`, `profiles_v2`, `custom_cars` and `anthropic_api_key`. If you change a stored shape incompatibly, bump the key suffix; there is no migration layer.

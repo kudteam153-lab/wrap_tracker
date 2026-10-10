@@ -142,3 +142,53 @@ function sanitize(r, clients, profiles) {
     notes: notes.join('; '),
   };
 }
+
+const STATS_SYSTEM = `Мастер по оклейке авто спрашивает статистику своих работ. Переведи запрос в фильтр.
+
+- from, to: даты YYYY-MM-DD включительно, считай от сегодняшней даты. «с 1 по 15 прошлый месяц» → 1-е и 15-е число прошлого месяца. «этот месяц» → с 1-го по последнее число текущего месяца. «прошлая неделя» → понедельник–воскресенье. «за год» → с 1 января по 31 декабря текущего года. Период не назван → текущий месяц.
+- clientIds: id заказчиков из справочника, если названы. Не названы → пустой массив (все заказчики).
+- label: короткое описание периода по-русски, например «1–15 сентября · Студия».
+- notes: что не понял. Если всё ясно — "".`;
+
+export async function parseStatsQuery(text, { apiKey, clients }) {
+  const anthropic = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+  const response = await anthropic.beta.messages.create({
+    model: MODEL,
+    max_tokens: 4000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    output_config: {
+      effort: 'low',
+      format: {
+        type: 'json_schema',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['from', 'to', 'clientIds', 'label', 'notes'],
+          properties: {
+            from: { type: 'string' },
+            to: { type: 'string' },
+            clientIds: { type: 'array', items: { type: 'string', enum: clients.map(c => c.id) } },
+            label: { type: 'string' },
+            notes: { type: 'string' },
+          },
+        },
+      },
+    },
+    system: STATS_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `Заказчики: ${JSON.stringify(clients.map(({ id, name }) => ({ id, name })))}\n\nСегодня: ${nowLocal()}\n\nЗапрос:\n${text}`,
+    }],
+  });
+
+  if (response.stop_reason === 'refusal') throw new Error('Модель отказалась разбирать запрос');
+  const block = response.content.find(b => b.type === 'text');
+  if (!block) throw new Error('Пустой ответ модели');
+  const r = JSON.parse(block.text);
+  const day = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '');
+  let from = day(r.from), to = day(r.to);
+  if (from && to && from > to) [from, to] = [to, from];
+  if (!from || !to) throw new Error('Не понял период');
+  return { from, to, clientIds: [...new Set(r.clientIds)], label: r.label?.trim() || '', notes: r.notes?.trim() || '' };
+}

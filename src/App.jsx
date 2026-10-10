@@ -261,7 +261,7 @@ function NewClientModal({ profiles, onClose, onCreate }) {
 
 // ============ ЭКРАН 1: Форма ============
 // ============ Голосовой ввод ============
-function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSettings }) {
+function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSettings, onStatsRequest }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -269,6 +269,8 @@ function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSet
 
   const run = async () => {
     if (!text.trim() || busy) return;
+    // «Статистика с 1 по 15…» — это запрос отчёта, а не новая работа
+    if (/^\s*(покажи\s+)?статистик/i.test(text)) { onStatsRequest(text.trim()); setText(''); return; }
     setBusy(true); setError(''); setNotes('');
     try {
       const { parseJob } = await import('./agent');
@@ -298,7 +300,7 @@ function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSet
       <textarea value={text} onChange={e => setText(e.target.value)} rows={3}
         placeholder="Камри, студия, капот и два передних крыла, пополам. Вчера с 10 до 17"
         className="wt-input" style={{ minHeight: 72 }} />
-      <p className="text-xs text-slate-400">Нажми микрофон на клавиатуре и надиктуй</p>
+      <p className="text-xs text-slate-400">Нажми микрофон на клавиатуре и надиктуй. Начни со слова «статистика» — покажу отчёт</p>
       <button onClick={run} disabled={busy || !text.trim()}
         className={`btn-accent ${busy || !text.trim() ? 'opacity-50' : ''}`}>
         {busy ? 'Разбираю…' : 'Заполнить форму'}
@@ -309,7 +311,7 @@ function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSet
   );
 }
 
-function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient, customCars, onAddCar, apiKey, onOpenSettings }) {
+function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient, customCars, onAddCar, apiKey, onOpenSettings, onStatsRequest }) {
   const isEdit = !!editJob;
 
   const [startDT, setStartDT] = useState(editJob?.startDT || nowISO());
@@ -477,7 +479,7 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
       {!isEdit && (
         <VoiceInput apiKey={apiKey} clients={clients} profiles={profiles} customCars={customCars}
-          onParsed={applyParsed} onOpenSettings={onOpenSettings} />
+          onParsed={applyParsed} onOpenSettings={onOpenSettings} onStatsRequest={onStatsRequest} />
       )}
 
       <div className="grid grid-cols-2 gap-3">
@@ -713,7 +715,7 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
         <div className="label-upper">Итого</div>
         <div className="summary-card">
           <div className="flex justify-between text-xs">
-            <span className="opacity-60">Расчёт ({(share * 100).toFixed(share % 1 === 0 ? 0 : 1)}%)</span>
+            <span className="opacity-60">Расчёт ({+(share * 100).toFixed(1)}%)</span>
             <span className="font-bold font-mono">{fmt(calcWithShare)}</span>
           </div>
           {manualTotal !== '' && (
@@ -917,20 +919,65 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
 }
 
 // ============ ЭКРАН 3: Статистика ============
-function Stats({ jobs }) {
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const monthRange = () => {
+  const d = new Date();
+  return { from: isoDay(new Date(d.getFullYear(), d.getMonth(), 1)), to: isoDay(new Date(d.getFullYear(), d.getMonth() + 1, 0)) };
+};
+
+function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSettings }) {
   const [period, setPeriod] = useState('month');
+  // Свой фильтр: { from, to, clientIds, label } — задаётся голосом или вручную
+  const [filter, setFilter] = useState(null);
+  const [query, setQuery] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notes, setNotes] = useState('');
 
-  const { chartData, totalRevenue, jobsCount, avgCheck, avgPerDay, daysCount } = useMemo(() => {
-    const now = new Date();
-    let start = new Date();
-    let group = 'day';
-    if (period === 'day') { start.setDate(now.getDate() - 7); group = 'day'; }
-    else if (period === 'week') { start.setDate(now.getDate() - 28); group = 'week'; }
-    else if (period === 'month') { start.setMonth(now.getMonth() - 6); group = 'month'; }
-    else { start.setFullYear(now.getFullYear() - 3); group = 'year'; }
+  const runQuery = async (text) => {
+    if (!text.trim() || busy) return;
+    setBusy(true); setError(''); setNotes('');
+    try {
+      const { parseStatsQuery } = await import('./agent');
+      const r = await parseStatsQuery(text.trim(), { apiKey, clients });
+      setFilter({ from: r.from, to: r.to, clientIds: r.clientIds, label: r.label });
+      setNotes(r.notes);
+      setQuery('');
+    } catch (e) {
+      console.error(e);
+      setError(e?.status === 401 ? 'Неверный API-ключ' : e?.message || 'Не удалось разобрать');
+    } finally {
+      setBusy(false);
+    }
+  };
 
-    const startIso = start.toISOString().slice(0, 10);
-    const filtered = jobs.filter(j => j.startDT.slice(0, 10) >= startIso);
+  // Запрос, пришедший из голосового поля на экране новой работы
+  useEffect(() => {
+    if (!request) return;
+    onRequestHandled();
+    if (apiKey) runQuery(request);
+  }, [request]);
+
+  const { filtered, chartData, totalRevenue, jobsCount, avgCheck, avgPerDay } = useMemo(() => {
+    let filtered, group;
+    if (filter) {
+      filtered = jobs.filter(j => {
+        const d = j.startDT.slice(0, 10);
+        return d >= filter.from && d <= filter.to && (!filter.clientIds.length || filter.clientIds.includes(j.clientId));
+      });
+      const days = (new Date(filter.to) - new Date(filter.from)) / 864e5;
+      group = days <= 62 ? 'day' : 'month';
+    } else {
+      const now = new Date();
+      const start = new Date();
+      if (period === 'day') { start.setDate(now.getDate() - 7); group = 'day'; }
+      else if (period === 'week') { start.setDate(now.getDate() - 28); group = 'week'; }
+      else if (period === 'month') { start.setMonth(now.getMonth() - 6); group = 'month'; }
+      else { start.setFullYear(now.getFullYear() - 3); group = 'year'; }
+      const startIso = start.toISOString().slice(0, 10);
+      filtered = jobs.filter(j => j.startDT.slice(0, 10) >= startIso);
+    }
+
     const groups = {};
     const uniqueDays = new Set();
     filtered.forEach(job => {
@@ -948,23 +995,87 @@ function Stats({ jobs }) {
     const totalRevenue = filtered.reduce((s, j) => s + j.finalTotal, 0);
     const jobsCount = filtered.length;
     const avgCheck = jobsCount ? totalRevenue / jobsCount : 0;
-    const daysCount = uniqueDays.size || 1;
-    const avgPerDay = totalRevenue / daysCount;
-    return { chartData, totalRevenue, jobsCount, avgCheck, avgPerDay, daysCount };
-  }, [jobs, period]);
+    const avgPerDay = totalRevenue / (uniqueDays.size || 1);
+    return { filtered, chartData, totalRevenue, jobsCount, avgCheck, avgPerDay };
+  }, [jobs, period, filter]);
+
+  const byClient = useMemo(() => {
+    const m = {};
+    filtered.forEach(j => {
+      const r = m[j.clientId] || (m[j.clientId] = { sum: 0, count: 0 });
+      r.sum += j.finalTotal; r.count += 1;
+    });
+    return Object.entries(m).map(([id, r]) => ({ name: clients.find(c => c.id === id)?.name || 'Удалённый заказчик', ...r }))
+      .sort((a, b) => b.sum - a.sum);
+  }, [filtered, clients]);
+
+  const byItem = useMemo(() => {
+    const m = {};
+    filtered.forEach(j => (j.lines || []).forEach(l => {
+      const r = m[l.name] || (m[l.name] = { qty: 0, sum: 0 });
+      r.qty += l.qty; r.sum += l.price * l.qty;
+    }));
+    return Object.entries(m).map(([name, r]) => ({ name, ...r })).sort((a, b) => b.sum - a.sum).slice(0, 10);
+  }, [filtered]);
 
   const periods = [{ key: 'day', label: 'Дни' }, { key: 'week', label: 'Недели' }, { key: 'month', label: 'Месяцы' }, { key: 'year', label: 'Годы' }];
+  const editFilter = (patch) => setFilter(f => ({ ...f, ...patch, label: '' }));
+  const toggleClient = (id) => editFilter({
+    clientIds: filter.clientIds.includes(id) ? filter.clientIds.filter(x => x !== id) : [...filter.clientIds, id],
+  });
 
   return (
     <div className="p-4 pb-24 space-y-4">
       <h1 className="text-2xl font-extrabold tracking-tight">Статистика</h1>
-      <div className="grid grid-cols-4 gap-1 bg-slate-100 p-1 rounded-xl">
+
+      {apiKey ? (
+        <div className="wt-card p-3 space-y-2">
+          <div className="label-upper">Спроси голосом</div>
+          <div className="flex gap-2">
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && runQuery(query)}
+              placeholder="С 1 по 15 прошлого месяца, студия" className="wt-input flex-1" />
+            <button onClick={() => runQuery(query)} disabled={busy || !query.trim()}
+              className={`px-4 rounded-xl bg-emerald-600 text-white text-sm font-bold shrink-0 ${busy || !query.trim() ? 'opacity-50' : ''}`}>
+              {busy ? '…' : 'Показать'}
+            </button>
+          </div>
+          {error && <p className="text-xs text-red-500">{error}</p>}
+          {notes && <p className="text-xs text-amber-600">Проверь: {notes}</p>}
+        </div>
+      ) : (
+        <button onClick={onOpenSettings} className="wt-card w-full p-3 text-left text-xs text-slate-500">
+          Голосовой запрос: добавь API-ключ Claude в <span className="font-semibold text-emerald-700 underline">настройках</span>
+        </button>
+      )}
+
+      <div className="grid grid-cols-5 gap-1 bg-slate-100 p-1 rounded-xl">
         {periods.map(p => (
-          <button key={p.key} onClick={() => setPeriod(p.key)}
+          <button key={p.key} onClick={() => { setPeriod(p.key); setFilter(null); }}
             className={`py-2 rounded-lg text-xs font-semibold transition
-              ${period === p.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>{p.label}</button>
+              ${!filter && period === p.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>{p.label}</button>
         ))}
+        <button onClick={() => !filter && setFilter({ ...monthRange(), clientIds: [], label: '' })}
+          className={`py-2 rounded-lg text-xs font-semibold transition ${filter ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>Свой</button>
       </div>
+
+      {filter && (
+        <div className="wt-card p-3 space-y-2">
+          {filter.label && <div className="text-sm font-bold">{filter.label}</div>}
+          <div className="grid grid-cols-2 gap-2">
+            <input type="date" value={filter.from} onChange={e => e.target.value && editFilter({ from: e.target.value })} className="wt-input" />
+            <input type="date" value={filter.to} onChange={e => e.target.value && editFilter({ to: e.target.value })} className="wt-input" />
+          </div>
+          <div className="flex gap-1.5 flex-wrap">
+            <button onClick={() => editFilter({ clientIds: [] })}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${!filter.clientIds.length ? 'bg-black text-white border-black' : 'bg-white text-slate-600 border-slate-200'}`}>Все</button>
+            {clients.map(c => (
+              <button key={c.id} onClick={() => toggleClient(c.id)}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${filter.clientIds.includes(c.id) ? 'bg-black text-white border-black' : 'bg-white text-slate-600 border-slate-200'}`}>{c.name}</button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white p-3 rounded-2xl border border-slate-200">
         <div className="text-xs text-slate-400">Доход</div>
@@ -1005,6 +1116,31 @@ function Stats({ jobs }) {
           </ResponsiveContainer>
         )}
       </div>
+
+      {byClient.length > 1 && (
+        <div className="bg-white p-3 rounded-2xl border border-slate-200">
+          <div className="font-bold text-sm mb-2">По заказчикам</div>
+          {byClient.map(r => (
+            <div key={r.name} className="flex justify-between text-sm py-1.5 border-t border-slate-100 first:border-t-0">
+              <span>{r.name} <span className="text-xs text-slate-400">· {r.count}</span></span>
+              <span className="font-mono font-semibold">{fmt(r.sum)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {byItem.length > 0 && (
+        <div className="bg-white p-3 rounded-2xl border border-slate-200">
+          <div className="font-bold text-sm">Что делал чаще всего</div>
+          <div className="text-xs text-slate-400 mb-2">Суммы по прайсу, без учёта доли</div>
+          {byItem.map(r => (
+            <div key={r.name} className="flex justify-between gap-2 text-xs py-1.5 border-t border-slate-100 first:border-t-0">
+              <span>{r.name}{r.qty > 1 && <span className="text-slate-400"> ×{r.qty}</span>}</span>
+              <span className="font-mono shrink-0">{fmt(r.sum)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1224,6 +1360,7 @@ export default function App() {
   const [profiles, setProfiles] = useState(() => load(KEYS.PROFILES, [STUDIO_PRICE, DEALER_PRICE]));
   const [customCars, setCustomCars] = useState(() => load(KEYS.CUSTOM_CARS, []));
   const [apiKey, setApiKey] = useState(() => load(KEYS.API_KEY, ''));
+  const [statsRequest, setStatsRequest] = useState(null);
 
   // Автопрокрутка к активному полю при открытии клавиатуры
   useEffect(() => {
@@ -1429,11 +1566,14 @@ export default function App() {
           onSave={addJob} onUpdate={updateJob} onCancelEdit={cancelEdit}
           onAddClient={addClient}
           customCars={customCars} onAddCar={addCustomCar}
-          apiKey={apiKey} onOpenSettings={() => setTab('settings')} />
+          apiKey={apiKey} onOpenSettings={() => setTab('settings')}
+          onStatsRequest={(text) => { setStatsRequest(text); setTab('stats'); }} />
       )}
       {tab === 'list' && <JobList jobs={jobs} clients={clients} profiles={profiles}
         onDelete={deleteJob} onEdit={startEdit} />}
-      {tab === 'stats' && <Stats jobs={jobs} />}
+      {tab === 'stats' && <Stats jobs={jobs} clients={clients} apiKey={apiKey}
+        request={statsRequest} onRequestHandled={() => setStatsRequest(null)}
+        onOpenSettings={() => setTab('settings')} />}
       {tab === 'settings' && <SettingsScreen profiles={profiles} clients={clients}
         onUpdateProfile={updateProfile} onDeleteProfile={deleteProfile}
         onDeleteClient={deleteClient}
