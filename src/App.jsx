@@ -102,6 +102,34 @@ const load = (k, fb) => { try { const raw = localStorage.getItem(k); return raw 
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.error(e); } };
 
 const fmt = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(n || 0)) + ' ₽';
+const nf = (n) => new Intl.NumberFormat('ru-RU').format(n || 0);
+const hasRange = (it) => it.priceMax > it.price;
+const fmtRange = (it) => hasRange(it) ? `${nf(it.price)}–${nf(it.priceMax)}` : nf(it.price);
+// «Минимальный» без раздела непонятен — добавляем раздел, если его нет в названии
+const itemLabel = (it) => {
+  if (!it.section) return it.name;
+  const name = it.name.toLowerCase();
+  const words = it.section.toLowerCase().split(/[\s/()]+/).filter(w => w.length >= 5);
+  return words.some(w => name.includes(w)) ? it.name : `${it.section}: ${it.name}`;
+};
+const groupBySection = (items) => items.reduce((groups, it) => {
+  const s = it.section || 'Без раздела';
+  const g = groups.find(x => x.section === s);
+  g ? g.items.push(it) : groups.push({ section: s, items: [it] });
+  return groups;
+}, []);
+
+// Снимок позиций в работу: после замены прайса старые работы сохраняют расшифровку
+const jobLines = ({ complexId, complexPrice, elementCounts = {}, elementPrices = {} }, profile) => {
+  const lines = [];
+  const cx = profile?.complex.find(c => c.id === complexId);
+  if (cx) lines.push({ kind: 'complex', name: itemLabel(cx), qty: 1, price: complexPrice ?? cx.price });
+  for (const [id, qty] of Object.entries(elementCounts)) {
+    const el = profile?.elements.find(e => e.id === id);
+    if (el && qty > 0) lines.push({ kind: 'element', name: itemLabel(el), qty, price: elementPrices[id] ?? el.price });
+  }
+  return lines;
+};
 const nowISO = () => { const d = new Date(); d.setSeconds(0, 0); return d.toISOString().slice(0, 16); };
 const fmtDT = (iso) => { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }); };
 
@@ -285,6 +313,11 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const [car, setCar] = useState(editJob?.car || '');
   const [complexId, setComplexId] = useState(editJob?.complexId || '');
   const [elementCounts, setElementCounts] = useState(editJob?.elementCounts || editJob?.elementIds?.reduce((m, id) => ({ ...m, [id]: (m[id] || 0) + 1 }), {}) || {});
+  // Цена за работу, если отличается от прайса (диапазоны): '' / отсутствие ключа = цена из прайса
+  const [complexPrice, setComplexPrice] = useState(editJob?.complexPrice != null ? String(editJob.complexPrice) : '');
+  const [elementPrices, setElementPrices] = useState(editJob?.elementPrices || {});
+  const [elSearch, setElSearch] = useState('');
+  const [openSection, setOpenSection] = useState(null);
   const [share, setShare] = useState(editJob?.share ?? 1);
   const [customPercent, setCustomPercent] = useState('');
   const [manualTotal, setManualTotal] = useState(editJob?.manualTotal != null ? String(editJob.manualTotal) : '');
@@ -297,8 +330,8 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const handleClientChange = (newId) => {
     if (newId === clientId) return;
     setClientId(newId);
-    setComplexId('');
-    setElementCounts({});
+    setComplexId(''); setComplexPrice('');
+    setElementCounts({}); setElementPrices({});
   };
 
   const handleShareButton = (val) => {
@@ -314,26 +347,44 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
     }
   };
 
+  const elPrice = (el) => elementPrices[el.id] ?? el.price;
+  const selectedComplex = profile?.complex.find(c => c.id === complexId);
+  const complexPriceNum = complexPrice !== '' ? (parseFloat(complexPrice) || 0) : null;
+
   const elementsSubtotal = useMemo(() => {
-    return Object.entries(elementCounts).reduce((s, [id, cnt]) =>
-      s + (profile?.elements.find(e => e.id === id)?.price || 0) * cnt, 0);
-  }, [elementCounts, profile]);
+    return Object.entries(elementCounts).reduce((s, [id, cnt]) => {
+      const el = profile?.elements.find(e => e.id === id);
+      return s + (el ? elPrice(el) : 0) * cnt;
+    }, 0);
+  }, [elementCounts, elementPrices, profile]);
+
+  // Работа, сохранённая по старому прайсу: её позиций уже нет — считаем по снимку, пока не выбрано новое
+  const hasKnownElements = Object.keys(elementCounts).some(id => profile?.elements.some(e => e.id === id));
+  const legacyLines = isEdit && editJob.lines?.length && !selectedComplex && !hasKnownElements ? editJob.lines : null;
 
   const calcTotal = useMemo(() => {
-    const cp = profile?.complex.find(c => c.id === complexId)?.price || 0;
+    if (legacyLines) return legacyLines.reduce((s, l) => s + l.price * l.qty, 0);
+    const cp = selectedComplex ? (complexPriceNum ?? selectedComplex.price) : 0;
     return cp + elementsSubtotal;
-  }, [complexId, elementsSubtotal, profile]);
+  }, [legacyLines, selectedComplex, complexPriceNum, elementsSubtotal]);
+
+  const setElPrice = (id, val) => setElementPrices(prev => {
+    if (val === '') { const { [id]: _, ...rest } = prev; return rest; }
+    return { ...prev, [id]: parseFloat(val) || 0 };
+  });
 
   const calcWithShare = calcTotal * share;
   const finalTotal = manualTotal !== '' ? (parseFloat(manualTotal) || 0) : calcWithShare;
   const baseTotal = manualTotal !== '' ? (parseFloat(manualTotal) || 0) : calcTotal;
 
   const incEl = (id) => setElementCounts(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
-  const decEl = (id) => setElementCounts(prev => {
-    const c = (prev[id] || 0) - 1;
-    if (c <= 0) { const { [id]: _, ...rest } = prev; return rest; }
-    return { ...prev, [id]: c };
-  });
+  const decEl = (id) => {
+    const c = (elementCounts[id] || 0) - 1;
+    if (c > 0) { setElementCounts({ ...elementCounts, [id]: c }); return; }
+    const { [id]: _, ...rest } = elementCounts;
+    setElementCounts(rest);
+    setElPrice(id, '');
+  };
 
   const handlePhoto = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -351,7 +402,9 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const applyParsed = (r) => {
     setClientId(r.clientId);
     setComplexId(r.complexId);
+    setComplexPrice(r.complexPrice != null ? String(r.complexPrice) : '');
     setElementCounts(r.elementCounts);
+    setElementPrices(r.elementPrices);
     if (r.car) setCar(r.car);
     if (r.share != null) {
       const preset = SHARE_OPTIONS.find(o => o.value === r.share);
@@ -367,7 +420,8 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
   const resetForm = () => {
     setStartDT(nowISO()); setEndDT(nowISO()); setClientId('studio');
-    setOrderNumber(''); setPhotos([]); setCar(''); setComplexId(''); setElementCounts({});
+    setOrderNumber(''); setPhotos([]); setCar(''); setComplexId(''); setComplexPrice('');
+    setElementCounts({}); setElementPrices({}); setElSearch(''); setOpenSection(null);
     setShare(1); setCustomPercent(''); setManualTotal(''); setComment('');
   };
 
@@ -376,6 +430,8 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
     const payload = {
       startDT, endDT, clientId, orderNumber: orderNumber.trim(), photos, car: car.trim(),
       priceProfileId: client.priceProfileId, complexId: complexId || null, elementCounts,
+      complexPrice: selectedComplex ? complexPriceNum : null, elementPrices,
+      lines: legacyLines || jobLines({ complexId, complexPrice: complexPriceNum, elementCounts, elementPrices }, profile),
       share, manualTotal: manualTotal !== '' ? parseFloat(manualTotal) : null,
       baseTotal: calcTotal, finalTotal, comment,
     };
@@ -493,48 +549,105 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
       <div>
         <label className="label-upper">Комплекс работ</label>
-        <select value={complexId} onChange={e => setComplexId(e.target.value)}
+        <select value={complexId} onChange={e => { setComplexId(e.target.value); setComplexPrice(''); }}
           className="wt-input">
           <option value="">— не выбрано —</option>
-          {profile?.complex.map(c => <option key={c.id} value={c.id}>{c.name} — {fmt(c.price)}</option>)}
+          {groupBySection(profile?.complex || []).map(g => (
+            <optgroup key={g.section} label={g.section}>
+              {g.items.map(c => <option key={c.id} value={c.id}>{c.name} — {fmtRange(c)} ₽</option>)}
+            </optgroup>
+          ))}
         </select>
+        {selectedComplex && (
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-slate-400 flex-1">{selectedComplex.note || (hasRange(selectedComplex) ? `Прайс: ${fmtRange(selectedComplex)} ₽` : 'Цена')}</span>
+            <input type="number" value={complexPrice} onChange={e => setComplexPrice(e.target.value)}
+              placeholder={String(selectedComplex.price)}
+              className="wt-input text-sm font-mono text-right" style={{ width: 110 }} />
+          </div>
+        )}
       </div>
 
       <div>
         <div className="label-upper">По элементам</div>
-        <div className="grid grid-cols-3 gap-1.5">
-          {profile?.elements.map(el => {
+
+        {legacyLines && (
+          <div className="wt-card p-3 mb-2 text-xs text-slate-500">
+            <div className="font-semibold text-slate-600 mb-1">Позиции из старого прайса</div>
+            {legacyLines.map((l, i) => <div key={i}>{l.name}{l.qty > 1 && ` ×${l.qty}`} — {fmt(l.price * l.qty)}</div>)}
+            <div className="mt-1">Выбери позиции заново, если нужно пересчитать</div>
+          </div>
+        )}
+
+        {Object.keys(elementCounts).length > 0 && (
+          <div className="wt-card p-2 mb-2">
+            {Object.entries(elementCounts).map(([id, count], i) => {
+              const el = profile?.elements.find(e => e.id === id);
+              if (!el) return null;
+              return (
+                <div key={id} className={`flex items-center gap-2 py-2 ${i > 0 ? 'border-t border-dashed border-slate-200' : ''}`}>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-semibold">{itemLabel(el)}</div>
+                    {hasRange(el) && <div className="text-xs text-slate-400 font-mono">{fmtRange(el)}</div>}
+                  </div>
+                  <input type="number" value={elementPrices[id] ?? ''} onChange={e => setElPrice(id, e.target.value)}
+                    placeholder={String(el.price)}
+                    className="wt-input text-xs font-mono text-right" style={{ width: 76, height: 32 }} />
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => decEl(id)}
+                      className="w-7 h-7 rounded-md bg-white border border-emerald-300 text-emerald-700 flex items-center justify-center font-bold">−</button>
+                    <span className="font-mono font-bold w-5 text-center text-sm">{count}</span>
+                    <button onClick={() => incEl(id)}
+                      className="w-7 h-7 rounded-md bg-emerald-600 text-white flex items-center justify-center font-bold">+</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <input value={elSearch} onChange={e => setElSearch(e.target.value)}
+          placeholder="Найти позицию…" className="wt-input mb-2" />
+
+        {(() => {
+          const q = elSearch.trim().toLowerCase();
+          const items = (profile?.elements || []).filter(el =>
+            !q || `${el.section || ''} ${el.name}`.toLowerCase().includes(q));
+          const row = (el) => {
             const count = elementCounts[el.id] || 0;
             return (
-              <div key={el.id}
-                onClick={() => { if (count === 0) incEl(el.id); }}
-                style={{minHeight: 52}}
-                className={`relative rounded-xl p-2 text-left text-xs font-semibold border transition flex flex-col justify-between select-none
-                  ${count > 0
-                    ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                    : 'bg-white text-slate-600 border-slate-200 cursor-pointer active:bg-slate-50'}`}>
-                <span>{el.name}</span>
-                <span className={`font-mono text-xs font-medium ${count > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
-                  {new Intl.NumberFormat('ru-RU').format(el.price)}
-                </span>
-                {count > 0 && (
-                  <>
-                    <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-emerald-600 text-white font-extrabold flex items-center justify-center border-2 border-white" style={{fontSize:10}}>
-                      {count}
-                    </span>
-                    <div className="flex items-center justify-between mt-1 pt-1 border-t border-emerald-200">
-                      <button onClick={(e) => { e.stopPropagation(); decEl(el.id); }}
-                        className="w-6 h-6 rounded-md bg-white border border-emerald-300 text-emerald-700 flex items-center justify-center font-bold" style={{fontSize:14, lineHeight:1}}>−</button>
-                      <span className="font-mono font-bold" style={{fontSize:13}}>{count}</span>
-                      <button onClick={(e) => { e.stopPropagation(); incEl(el.id); }}
-                        className="w-6 h-6 rounded-md bg-emerald-600 text-white flex items-center justify-center font-bold" style={{fontSize:14, lineHeight:1}}>+</button>
-                    </div>
-                  </>
-                )}
-              </div>
+              <button key={el.id} onClick={() => incEl(el.id)}
+                className={`w-full flex justify-between items-center gap-2 px-3 py-2 text-left text-xs border-t border-slate-100 first:border-t-0
+                  ${count > 0 ? 'bg-emerald-50 text-emerald-700 font-semibold' : 'text-slate-700 active:bg-slate-50'}`}>
+                <span>{el.name}{count > 0 && ` ×${count}`}</span>
+                <span className="font-mono text-slate-400 shrink-0">{fmtRange(el)}</span>
+              </button>
             );
-          })}
-        </div>
+          };
+          if (q) return (
+            <div className="wt-card overflow-hidden">
+              {items.length ? items.map(row) : <p className="text-xs text-slate-400 p-3">Ничего не найдено</p>}
+            </div>
+          );
+          return (
+            <div className="space-y-1.5">
+              {groupBySection(items).map(g => {
+                const open = openSection === g.section;
+                const picked = g.items.reduce((s, el) => s + (elementCounts[el.id] || 0), 0);
+                return (
+                  <div key={g.section} className="wt-card overflow-hidden">
+                    <button onClick={() => setOpenSection(open ? null : g.section)}
+                      className="w-full flex justify-between items-center gap-2 px-3 py-2.5 text-sm font-semibold text-left">
+                      <span>{g.section}{picked > 0 && <span className="ml-2 text-xs text-emerald-600">· {picked}</span>}</span>
+                      <ChevronDown size={16} className={`text-slate-400 transition ${open ? 'rotate-180' : ''}`} />
+                    </button>
+                    {open && <div className="border-t border-slate-100">{g.items.map(row)}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
         {elementsSubtotal > 0 && (
           <p className="text-xs text-slate-400 mt-1.5">Итого по элементам: <span className="font-semibold text-slate-900">{fmt(elementsSubtotal)}</span></p>
         )}
@@ -622,8 +735,9 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
   }, [jobs, from, to, carFilter]);
 
   const cName = (id) => clients.find(c => c.id === id)?.name || '—';
-  const cxName = (j) => profiles.find(p => p.id === j.priceProfileId)?.complex.find(c => c.id === j.complexId)?.name;
+  const cxName = (j) => j.lines ? j.lines.find(l => l.kind === 'complex')?.name : profiles.find(p => p.id === j.priceProfileId)?.complex.find(c => c.id === j.complexId)?.name;
   const elNames = (j) => {
+    if (j.lines) return j.lines.filter(l => l.kind === 'element').map(l => l.qty > 1 ? `${l.name} ×${l.qty}` : l.name);
     const p = profiles.find(pr => pr.id === j.priceProfileId);
     if (j.elementCounts) {
       return Object.entries(j.elementCounts)
@@ -869,22 +983,33 @@ function PriceEditor({ profile, onUpdate, onDelete, canDelete }) {
   useEffect(() => setName(profile.name), [profile.name, profile.id]);
 
   const updateItem = (type, id, field, value) => {
-    const items = profile[type].map(it => it.id === id ? { ...it, [field]: field === 'price' ? (parseFloat(value) || 0) : value } : it);
+    const num = (v) => parseFloat(v) || 0;
+    const items = profile[type].map(it => {
+      if (it.id !== id) return it;
+      if (field === 'priceMax') {
+        const { priceMax: _, ...rest } = it;
+        return value === '' ? rest : { ...rest, priceMax: num(value) };
+      }
+      return { ...it, [field]: field === 'price' ? num(value) : value };
+    });
     onUpdate({ ...profile, [type]: items });
   };
   const addItem = (type) => {
-    const newItem = { id: `${type[0]}${Date.now()}`, name: 'Новая позиция', price: 0 };
+    const last = profile[type][profile[type].length - 1];
+    const newItem = { id: `${type[0]}${Date.now()}`, name: 'Новая позиция', price: 0, ...(last?.section && { section: last.section }) };
     onUpdate({ ...profile, [type]: [...profile[type], newItem] });
   };
   const removeItem = (type, id) => onUpdate({ ...profile, [type]: profile[type].filter(it => it.id !== id) });
   const saveName = () => onUpdate({ ...profile, name: name.trim() || profile.name });
 
   const bulkAdjust = (pct) => {
-    const adj = (items) => items.map(it => ({ ...it, price: Math.round(it.price * (1 + pct / 100)) }));
+    const f = (v) => Math.round(v * (1 + pct / 100));
+    const adj = (items) => items.map(it => ({ ...it, price: f(it.price), ...(it.priceMax && { priceMax: f(it.priceMax) }) }));
     onUpdate({ ...profile, complex: adj(profile.complex), elements: adj(profile.elements) });
   };
   const bulkRound = () => {
-    const rnd = (items) => items.map(it => ({ ...it, price: Math.round(it.price / 500) * 500 }));
+    const f = (v) => Math.round(v / 500) * 500;
+    const rnd = (items) => items.map(it => ({ ...it, price: f(it.price), ...(it.priceMax && { priceMax: f(it.priceMax) }) }));
     onUpdate({ ...profile, complex: rnd(profile.complex), elements: rnd(profile.elements) });
   };
 
@@ -896,19 +1021,26 @@ function PriceEditor({ profile, onUpdate, onDelete, canDelete }) {
           <Plus size={14} /> добавить
         </button>
       </div>
-      <div className="bg-white border border-slate-200 rounded-2xl p-2 space-y-0">
-        {profile[type].map((it, i) => (
-          <div key={it.id} className={`flex gap-2 items-center py-2 ${i < profile[type].length - 1 ? 'border-b border-dashed border-slate-200' : ''}`}>
-            <input value={it.name} onChange={e => updateItem(type, it.id, 'name', e.target.value)}
-              className="flex-1 px-2 py-1.5 rounded-lg border border-slate-200 text-sm font-semibold" />
-            <input type="number" value={it.price} onChange={e => updateItem(type, it.id, 'price', e.target.value)}
-              className="w-24 px-2 py-1.5 rounded-lg border border-slate-200 text-xs text-right font-mono font-semibold focus:outline-emerald-100 focus:border-emerald-500" />
-            <button onClick={() => removeItem(type, it.id)} className="text-slate-400 hover:text-red-500 p-1">
-              <Trash2 size={14} />
-            </button>
+      {groupBySection(profile[type]).map(g => (
+        <div key={g.section}>
+          {g.section !== 'Без раздела' && <div className="text-xs font-semibold text-slate-500 mt-2 mb-1">{g.section}</div>}
+          <div className="bg-white border border-slate-200 rounded-2xl p-2 space-y-0">
+            {g.items.map((it, i) => (
+              <div key={it.id} className={`flex gap-1.5 items-center py-2 ${i < g.items.length - 1 ? 'border-b border-dashed border-slate-200' : ''}`}>
+                <input value={it.name} onChange={e => updateItem(type, it.id, 'name', e.target.value)}
+                  className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold" />
+                <input type="number" value={it.price} onChange={e => updateItem(type, it.id, 'price', e.target.value)}
+                  className="w-16 px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs text-right font-mono font-semibold focus:outline-emerald-100 focus:border-emerald-500" />
+                <input type="number" value={it.priceMax || ''} placeholder="до" onChange={e => updateItem(type, it.id, 'priceMax', e.target.value)}
+                  className="w-16 px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs text-right font-mono focus:outline-emerald-100 focus:border-emerald-500" />
+                <button onClick={() => removeItem(type, it.id)} className="text-slate-400 hover:text-red-500 p-1">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 
@@ -945,6 +1077,38 @@ function PriceEditor({ profile, onUpdate, onDelete, canDelete }) {
   );
 }
 
+function DataSettings({ onImport, onExport }) {
+  const fileRef = useRef(null);
+  const [msg, setMsg] = useState('');
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setMsg(onImport(JSON.parse(await file.text())) || '');
+    } catch (err) {
+      console.error(err);
+      setMsg('Не удалось прочитать файл');
+    }
+  };
+
+  return (
+    <div className="wt-card p-3 space-y-2">
+      <div className="label-upper">Данные</div>
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={() => fileRef.current?.click()}
+          className="h-10 rounded-xl border border-slate-200 bg-white text-xs font-bold">Импорт из файла</button>
+        <button onClick={onExport}
+          className="h-10 rounded-xl border border-slate-200 bg-white text-xs font-bold">Резервная копия</button>
+      </div>
+      <input ref={fileRef} type="file" accept=".json,application/json" onChange={handleFile} className="hidden" />
+      <p className="text-xs text-slate-400">Импорт принимает файл прайса или резервную копию. Всё хранится только на этом устройстве — сохраняй копию перед сменой телефона или очисткой браузера.</p>
+      {msg && <p className="text-xs text-emerald-700">{msg}</p>}
+    </div>
+  );
+}
+
 function ApiKeySettings({ apiKey, onChange }) {
   const [draft, setDraft] = useState(apiKey);
   const dirty = draft.trim() !== apiKey;
@@ -961,7 +1125,7 @@ function ApiKeySettings({ apiKey, onChange }) {
   );
 }
 
-function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, onDeleteClient, apiKey, onApiKeyChange }) {
+function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, onDeleteClient, apiKey, onApiKeyChange, onImport, onExport }) {
   const [expanded, setExpanded] = useState(profiles[0]?.id);
 
   const getClientForProfile = (profileId) => clients.find(c => c.priceProfileId === profileId);
@@ -1013,6 +1177,7 @@ function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, o
         );
       })}
 
+      <DataSettings onImport={onImport} onExport={onExport} />
       <ApiKeySettings apiKey={apiKey} onChange={onApiKeyChange} />
     </div>
   );
@@ -1121,6 +1286,49 @@ export default function App() {
 
   const updateApiKey = (k) => { setApiKey(k); save(KEYS.API_KEY, k); };
 
+  const importData = (data) => {
+    if (data?.type === 'wrap-tracker-backup') {
+      if (!Array.isArray(data.jobs) || !Array.isArray(data.profiles) || !Array.isArray(data.clients)) return 'Файл повреждён';
+      if (!confirm(`Заменить все данные копией: ${data.jobs.length} работ, ${data.profiles.length} прайсов?`)) return '';
+      setJobs(data.jobs); setClients(data.clients); setProfiles(data.profiles); setCustomCars(data.customCars || []);
+      save(KEYS.JOBS, data.jobs); save(KEYS.CLIENTS, data.clients); save(KEYS.PROFILES, data.profiles); save(KEYS.CUSTOM_CARS, data.customCars || []);
+      return 'Копия восстановлена';
+    }
+    if (data?.type !== 'wrap-tracker-prices' || !Array.isArray(data.profiles)) return 'Это не файл прайса и не резервная копия';
+    const incoming = data.profiles.filter(p => p.id && p.name && Array.isArray(p.complex) && Array.isArray(p.elements));
+    const summary = incoming.map(p => `${p.name}: ${p.complex.length + p.elements.length} поз.`).join(', ');
+    if (!confirm(`Заменить прайсы? ${summary}`)) return '';
+
+    // Старые работы ссылаются на id старого прайса — сохраняем им расшифровку до замены
+    const nj = jobs.map(j => j.lines ? j : { ...j, lines: jobLines(j, profiles.find(p => p.id === j.priceProfileId)) });
+    let np = [...profiles], nc = [...clients];
+    for (const p of incoming) {
+      if (np.some(x => x.id === p.id)) {
+        np = np.map(x => x.id === p.id ? { ...x, complex: p.complex, elements: p.elements } : x);
+      } else {
+        np.push(p);
+        if (!nc.some(c => c.priceProfileId === p.id)) nc.push({ id: `client_${p.id}`, name: p.name, priceProfileId: p.id });
+      }
+    }
+    setJobs(nj); setProfiles(np); setClients(nc);
+    save(KEYS.JOBS, nj); save(KEYS.PROFILES, np); save(KEYS.CLIENTS, nc);
+    return `Прайсы обновлены: ${summary}`;
+  };
+
+  const exportBackup = async () => {
+    const data = { type: 'wrap-tracker-backup', version: 1, exportedAt: new Date().toISOString(), jobs, clients, profiles, customCars };
+    const name = `wrap-tracker-${new Date().toISOString().slice(0, 10)}.json`;
+    const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
+    // На телефоне удобнее системное «Поделиться» (Файлы, Telegram), на компьютере — обычная загрузка
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const tabs = [
     { key: 'new', icon: Plus, label: 'Новая' },
     { key: 'list', icon: List, label: 'Работы' },
@@ -1197,7 +1405,8 @@ export default function App() {
       {tab === 'settings' && <SettingsScreen profiles={profiles} clients={clients}
         onUpdateProfile={updateProfile} onDeleteProfile={deleteProfile}
         onDeleteClient={deleteClient}
-        apiKey={apiKey} onApiKeyChange={updateApiKey} />}
+        apiKey={apiKey} onApiKeyChange={updateApiKey}
+        onImport={importData} onExport={exportBackup} />}
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 max-w-md mx-auto safe-bottom">
         <div className="grid grid-cols-4">
