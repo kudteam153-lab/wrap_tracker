@@ -96,7 +96,7 @@ const DEFAULT_CLIENTS = [
 ];
 
 const SHARE_OPTIONS = [{ label: '100%', value: 1 }, { label: '50%', value: 0.5 }, { label: '33.3%', value: 0.333 }];
-const KEYS = { JOBS: 'jobs_v2', CLIENTS: 'clients_v2', PROFILES: 'profiles_v2', CUSTOM_CARS: 'custom_cars' };
+const KEYS = { JOBS: 'jobs_v2', CLIENTS: 'clients_v2', PROFILES: 'profiles_v2', CUSTOM_CARS: 'custom_cars', API_KEY: 'anthropic_api_key' };
 
 const load = (k, fb) => { try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : fb; } catch { return fb; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.error(e); } };
@@ -222,7 +222,56 @@ function NewClientModal({ profiles, onClose, onCreate }) {
 }
 
 // ============ ЭКРАН 1: Форма ============
-function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient, customCars, onAddCar }) {
+// ============ Голосовой ввод ============
+function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSettings }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const run = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true); setError(''); setNotes('');
+    try {
+      const { parseJob } = await import('./agent');
+      const r = await parseJob(text.trim(), { apiKey, clients, profiles, cars: [...FLAT_CARS, ...customCars] });
+      onParsed(r);
+      setNotes(r.notes);
+      setText('');
+    } catch (e) {
+      console.error(e);
+      setError(e?.status === 401 ? 'Неверный API-ключ' : e?.message || 'Не удалось разобрать');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!apiKey) {
+    return (
+      <button onClick={onOpenSettings} className="wt-card w-full p-3 text-left text-xs text-slate-500">
+        Голосовой ввод: добавь API-ключ Claude в <span className="font-semibold text-emerald-700 underline">настройках</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="wt-card p-3 space-y-2">
+      <div className="label-upper">Расскажи, что сделал</div>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={3}
+        placeholder="Камри, студия, капот и два передних крыла, пополам. Вчера с 10 до 17"
+        className="wt-input" style={{ minHeight: 72 }} />
+      <p className="text-xs text-slate-400">Нажми микрофон на клавиатуре и надиктуй</p>
+      <button onClick={run} disabled={busy || !text.trim()}
+        className={`btn-accent ${busy || !text.trim() ? 'opacity-50' : ''}`}>
+        {busy ? 'Разбираю…' : 'Заполнить форму'}
+      </button>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {notes && <p className="text-xs text-amber-600">Проверь: {notes}</p>}
+    </div>
+  );
+}
+
+function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient, customCars, onAddCar, apiKey, onOpenSettings }) {
   const isEdit = !!editJob;
 
   const [startDT, setStartDT] = useState(editJob?.startDT || nowISO());
@@ -298,6 +347,24 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
   const createClient = (name, baseId) => { const c = onAddClient(name, baseId); setClientId(c.id); setShowModal(false); };
 
+  // Заполнение формы ответом агента: перезаписываем только то, что он распознал
+  const applyParsed = (r) => {
+    setClientId(r.clientId);
+    setComplexId(r.complexId);
+    setElementCounts(r.elementCounts);
+    if (r.car) setCar(r.car);
+    if (r.share != null) {
+      const preset = SHARE_OPTIONS.find(o => o.value === r.share);
+      setShare(r.share);
+      setCustomPercent(preset ? '' : String(Math.round(r.share * 100)));
+    }
+    if (r.manualTotal != null) setManualTotal(String(r.manualTotal));
+    if (r.startDT) setStartDT(r.startDT);
+    if (r.endDT) setEndDT(r.endDT);
+    if (r.orderNumber) setOrderNumber(r.orderNumber);
+    if (r.comment) setComment(prev => prev ? `${prev}\n${r.comment}` : r.comment);
+  };
+
   const resetForm = () => {
     setStartDT(nowISO()); setEndDT(nowISO()); setClientId('studio');
     setOrderNumber(''); setPhotos([]); setCar(''); setComplexId(''); setElementCounts({});
@@ -333,6 +400,11 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
             className="text-xs text-slate-400 underline">Отмена</button>
         )}
       </div>
+
+      {!isEdit && (
+        <VoiceInput apiKey={apiKey} clients={clients} profiles={profiles} customCars={customCars}
+          onParsed={applyParsed} onOpenSettings={onOpenSettings} />
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div>
@@ -873,7 +945,23 @@ function PriceEditor({ profile, onUpdate, onDelete, canDelete }) {
   );
 }
 
-function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, onDeleteClient }) {
+function ApiKeySettings({ apiKey, onChange }) {
+  const [draft, setDraft] = useState(apiKey);
+  const dirty = draft.trim() !== apiKey;
+  return (
+    <div className="wt-card p-3 space-y-2">
+      <div className="label-upper">Голосовой ввод · API-ключ Claude</div>
+      <input type="password" autoComplete="off" value={draft} onChange={e => setDraft(e.target.value)}
+        placeholder="sk-ant-…" className="wt-input font-mono" />
+      <p className="text-xs text-slate-400">Ключ хранится только на этом устройстве. Создать: console.anthropic.com → API Keys</p>
+      {dirty && (
+        <button onClick={() => onChange(draft.trim())} className="btn-accent">Сохранить ключ</button>
+      )}
+    </div>
+  );
+}
+
+function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, onDeleteClient, apiKey, onApiKeyChange }) {
   const [expanded, setExpanded] = useState(profiles[0]?.id);
 
   const getClientForProfile = (profileId) => clients.find(c => c.priceProfileId === profileId);
@@ -924,6 +1012,8 @@ function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, o
           </div>
         );
       })}
+
+      <ApiKeySettings apiKey={apiKey} onChange={onApiKeyChange} />
     </div>
   );
 }
@@ -936,6 +1026,7 @@ export default function App() {
   const [clients, setClients] = useState(() => load(KEYS.CLIENTS, DEFAULT_CLIENTS));
   const [profiles, setProfiles] = useState(() => load(KEYS.PROFILES, [STUDIO_PRICE, DEALER_PRICE]));
   const [customCars, setCustomCars] = useState(() => load(KEYS.CUSTOM_CARS, []));
+  const [apiKey, setApiKey] = useState(() => load(KEYS.API_KEY, ''));
 
   // Автопрокрутка к активному полю при открытии клавиатуры
   useEffect(() => {
@@ -1028,6 +1119,8 @@ export default function App() {
     save(KEYS.CUSTOM_CARS, nc);
   };
 
+  const updateApiKey = (k) => { setApiKey(k); save(KEYS.API_KEY, k); };
+
   const tabs = [
     { key: 'new', icon: Plus, label: 'Новая' },
     { key: 'list', icon: List, label: 'Работы' },
@@ -1095,14 +1188,16 @@ export default function App() {
           editJob={editingJob}
           onSave={addJob} onUpdate={updateJob} onCancelEdit={cancelEdit}
           onAddClient={addClient}
-          customCars={customCars} onAddCar={addCustomCar} />
+          customCars={customCars} onAddCar={addCustomCar}
+          apiKey={apiKey} onOpenSettings={() => setTab('settings')} />
       )}
       {tab === 'list' && <JobList jobs={jobs} clients={clients} profiles={profiles}
         onDelete={deleteJob} onEdit={startEdit} />}
       {tab === 'stats' && <Stats jobs={jobs} />}
       {tab === 'settings' && <SettingsScreen profiles={profiles} clients={clients}
         onUpdateProfile={updateProfile} onDeleteProfile={deleteProfile}
-        onDeleteClient={deleteClient} />}
+        onDeleteClient={deleteClient}
+        apiKey={apiKey} onApiKeyChange={updateApiKey} />}
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 max-w-md mx-auto safe-bottom">
         <div className="grid grid-cols-4">
