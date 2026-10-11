@@ -96,7 +96,7 @@ const DEFAULT_CLIENTS = [
 ];
 
 const SHARE_OPTIONS = [{ label: '100%', value: 1 }, { label: '50%', value: 0.5 }, { label: '33.3%', value: 0.333 }];
-const KEYS = { JOBS: 'jobs_v2', CLIENTS: 'clients_v2', PROFILES: 'profiles_v2', CUSTOM_CARS: 'custom_cars', API_KEY: 'anthropic_api_key' };
+const KEYS = { JOBS: 'jobs_v2', CLIENTS: 'clients_v2', PROFILES: 'profiles_v2', CUSTOM_CARS: 'custom_cars', API_KEY: 'anthropic_api_key', MASTER_NAME: 'master_name' };
 
 const load = (k, fb) => { try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : fb; } catch { return fb; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.error(e); } };
@@ -261,7 +261,7 @@ function NewClientModal({ profiles, onClose, onCreate }) {
 
 // ============ ЭКРАН 1: Форма ============
 // ============ Голосовой ввод ============
-function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSettings, onStatsRequest }) {
+function VoiceInput({ apiKey, masterName, clients, profiles, customCars, onParsed, onOpenSettings, onStatsRequest }) {
   const [text, setText] = useState('');
   // Фото заказ-наряда: для распознавания — покрупнее, в работу — обычная копия, как у остальных фото
   const [photo, setPhoto] = useState(null); // { forApi, forJob }
@@ -288,7 +288,7 @@ function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSet
     try {
       const { parseJob } = await import('./agent');
       const image = photo && { data: photo.forApi.split(',')[1], mediaType: 'image/jpeg' };
-      const r = await parseJob(text.trim(), { apiKey, clients, profiles, cars: [...FLAT_CARS, ...customCars], image });
+      const r = await parseJob(text.trim(), { apiKey, clients, profiles, cars: [...FLAT_CARS, ...customCars], image, masterName });
       onParsed(r, photo?.forJob);
       setNotes(r.notes);
       setText(''); setPhoto(null);
@@ -340,7 +340,7 @@ function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSet
   );
 }
 
-function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient, customCars, onAddCar, apiKey, onOpenSettings, onStatsRequest }) {
+function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, onAddClient, customCars, onAddCar, apiKey, masterName, onOpenSettings, onStatsRequest }) {
   const isEdit = !!editJob;
 
   const [startDT, setStartDT] = useState(editJob?.startDT || nowISO());
@@ -508,7 +508,7 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
       </div>
 
       {!isEdit && (
-        <VoiceInput apiKey={apiKey} clients={clients} profiles={profiles} customCars={customCars}
+        <VoiceInput apiKey={apiKey} masterName={masterName} clients={clients} profiles={profiles} customCars={customCars}
           onParsed={applyParsed} onOpenSettings={onOpenSettings} onStatsRequest={onStatsRequest} />
       )}
 
@@ -1307,8 +1307,9 @@ function DataSettings({ onImport, onExport }) {
   );
 }
 
-function ApiKeySettings({ apiKey, onChange }) {
+function ApiKeySettings({ apiKey, onChange, masterName, onMasterNameChange }) {
   const [draft, setDraft] = useState(apiKey);
+  const [name, setName] = useState(masterName);
   const dirty = draft.trim() !== apiKey;
   return (
     <div className="wt-card p-3 space-y-2">
@@ -1319,11 +1320,15 @@ function ApiKeySettings({ apiKey, onChange }) {
       {dirty && (
         <button onClick={() => onChange(draft.trim())} className="btn-accent">Сохранить ключ</button>
       )}
+      <div className="label-upper pt-1">Моё имя в заказ-нарядах</div>
+      <input value={name} onChange={e => setName(e.target.value)} onBlur={() => onMasterNameChange(name.trim())}
+        placeholder="Как пишут в «Исполнителе»" className="wt-input" />
+      <p className="text-xs text-slate-400">Нужно, чтобы по фото наряда взять твою долю, если проценты проставлены по именам</p>
     </div>
   );
 }
 
-function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, onDeleteClient, apiKey, onApiKeyChange, onImport, onExport }) {
+function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, onDeleteClient, apiKey, onApiKeyChange, masterName, onMasterNameChange, onImport, onExport }) {
   const [expanded, setExpanded] = useState(profiles[0]?.id);
 
   const getClientForProfile = (profileId) => clients.find(c => c.priceProfileId === profileId);
@@ -1376,7 +1381,7 @@ function SettingsScreen({ profiles, clients, onUpdateProfile, onDeleteProfile, o
       })}
 
       <DataSettings onImport={onImport} onExport={onExport} />
-      <ApiKeySettings apiKey={apiKey} onChange={onApiKeyChange} />
+      <ApiKeySettings apiKey={apiKey} onChange={onApiKeyChange} masterName={masterName} onMasterNameChange={onMasterNameChange} />
     </div>
   );
 }
@@ -1391,6 +1396,7 @@ export default function App() {
   const [customCars, setCustomCars] = useState(() => load(KEYS.CUSTOM_CARS, []));
   const [apiKey, setApiKey] = useState(() => load(KEYS.API_KEY, ''));
   const [statsRequest, setStatsRequest] = useState(null);
+  const [masterName, setMasterName] = useState(() => load(KEYS.MASTER_NAME, ''));
 
   // Автопрокрутка к активному полю при открытии клавиатуры
   useEffect(() => {
@@ -1484,6 +1490,7 @@ export default function App() {
   };
 
   const updateApiKey = (k) => { setApiKey(k); save(KEYS.API_KEY, k); };
+  const updateMasterName = (n) => { setMasterName(n); save(KEYS.MASTER_NAME, n); };
 
   const importData = (data) => {
     if (data?.type === 'wrap-tracker-backup') {
@@ -1596,7 +1603,7 @@ export default function App() {
           onSave={addJob} onUpdate={updateJob} onCancelEdit={cancelEdit}
           onAddClient={addClient}
           customCars={customCars} onAddCar={addCustomCar}
-          apiKey={apiKey} onOpenSettings={() => setTab('settings')}
+          apiKey={apiKey} masterName={masterName} onOpenSettings={() => setTab('settings')}
           onStatsRequest={(text) => { setStatsRequest(text); setTab('stats'); }} />
       )}
       {tab === 'list' && <JobList jobs={jobs} clients={clients} profiles={profiles}
@@ -1608,6 +1615,7 @@ export default function App() {
         onUpdateProfile={updateProfile} onDeleteProfile={deleteProfile}
         onDeleteClient={deleteClient}
         apiKey={apiKey} onApiKeyChange={updateApiKey}
+        masterName={masterName} onMasterNameChange={updateMasterName}
         onImport={importData} onExport={exportBackup} />}
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 max-w-md mx-auto safe-bottom">

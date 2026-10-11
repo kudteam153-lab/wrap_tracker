@@ -41,7 +41,7 @@ Almost all of the app is in one file, `src/App.jsx`, which has sections marked w
 
 ### Data model
 
-- `localStorage` keys: `jobs_v2`, `clients_v2`, `profiles_v2`, `custom_cars` and `anthropic_api_key`. If you change a stored shape incompatibly, bump the key suffix; there is no migration layer.
+- `localStorage` keys: `jobs_v2`, `clients_v2`, `profiles_v2`, `custom_cars`, `anthropic_api_key` and `master_name` (the user's name as written in the order's «Исполнитель» column, used to pick their percentage share). If you change a stored shape incompatibly, bump the key suffix; there is no migration layer.
 - **Price profile**: `{ id, name, complex: [item], elements: [item] }`, item = `{ id, name, price, priceMax?, section?, note? }`. A complex is a package (a job can have several); elements are priced per piece. `price` is the default (lower bound), `priceMax` marks a range; the per-job price is entered in the form. The UI groups items by `section`.
 - **The user's real price list must never be committed** (the repo and the site are public). It's loaded on the device via Settings → «Импорт из файла» from a `{ type: 'wrap-tracker-prices', profiles }` JSON; Settings also exports/restores a full `wrap-tracker-backup`.
 - **Client**: `{ id, name, priceProfileId, isDefault? }`. Each custom client gets its own profile, cloned from a base profile when the client is created. Deleting a profile also deletes its clients.
