@@ -1396,7 +1396,7 @@ export default function App() {
   const [customCars, setCustomCars] = useState(() => load(KEYS.CUSTOM_CARS, []));
   const [apiKey, setApiKey] = useState(() => load(KEYS.API_KEY, ''));
   const [statsRequest, setStatsRequest] = useState(null);
-  const [masterName, setMasterName] = useState(() => load(KEYS.MASTER_NAME, ''));
+  const [masterName, setMasterName] = useState(() => load(KEYS.MASTER_NAME, 'Антон'));
 
   // Автопрокрутка к активному полю при открытии клавиатуры
   useEffect(() => {
