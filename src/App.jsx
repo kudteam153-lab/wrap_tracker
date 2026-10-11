@@ -263,21 +263,35 @@ function NewClientModal({ profiles, onClose, onCreate }) {
 // ============ Голосовой ввод ============
 function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSettings, onStatsRequest }) {
   const [text, setText] = useState('');
+  // Фото заказ-наряда: для распознавания — покрупнее, в работу — обычная копия, как у остальных фото
+  const [photo, setPhoto] = useState(null); // { forApi, forJob }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notes, setNotes] = useState('');
+  const photoRef = useRef(null);
+
+  const handlePhoto = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const [forApi, forJob] = await Promise.all([compressImage(file, 1600, 0.85), compressImage(file)]);
+    setPhoto({ forApi, forJob });
+  };
+
+  const ready = text.trim() || photo;
 
   const run = async () => {
-    if (!text.trim() || busy) return;
+    if (!ready || busy) return;
     // «Статистика с 1 по 15…» — это запрос отчёта, а не новая работа
-    if (/^\s*(покажи\s+)?статистик/i.test(text)) { onStatsRequest(text.trim()); setText(''); return; }
+    if (!photo && /^\s*(покажи\s+)?статистик/i.test(text)) { onStatsRequest(text.trim()); setText(''); return; }
     setBusy(true); setError(''); setNotes('');
     try {
       const { parseJob } = await import('./agent');
-      const r = await parseJob(text.trim(), { apiKey, clients, profiles, cars: [...FLAT_CARS, ...customCars] });
-      onParsed(r);
+      const image = photo && { data: photo.forApi.split(',')[1], mediaType: 'image/jpeg' };
+      const r = await parseJob(text.trim(), { apiKey, clients, profiles, cars: [...FLAT_CARS, ...customCars], image });
+      onParsed(r, photo?.forJob);
       setNotes(r.notes);
-      setText('');
+      setText(''); setPhoto(null);
     } catch (e) {
       console.error(e);
       setError(e?.status === 401 ? 'Неверный API-ключ' : e?.message || 'Не удалось разобрать');
@@ -298,11 +312,26 @@ function VoiceInput({ apiKey, clients, profiles, customCars, onParsed, onOpenSet
     <div className="wt-card p-3 space-y-2">
       <div className="label-upper">Расскажи, что сделал</div>
       <textarea value={text} onChange={e => setText(e.target.value)} rows={3}
-        placeholder="Камри, студия, капот и два передних крыла, пополам. Вчера с 10 до 17"
+        placeholder={photo ? 'Можно дополнить: «пополам, плюс бампер за 4500»' : 'Камри, студия, капот и два передних крыла, пополам. Вчера с 10 до 17'}
         className="wt-input" style={{ minHeight: 72 }} />
-      <p className="text-xs text-slate-400">Нажми микрофон на клавиатуре и надиктуй. Начни со слова «статистика» — покажу отчёт</p>
-      <button onClick={run} disabled={busy || !text.trim()}
-        className={`btn-accent ${busy || !text.trim() ? 'opacity-50' : ''}`}>
+      <p className="text-xs text-slate-400">Нажми микрофон на клавиатуре и надиктуй или сфотографируй заказ-наряд. Начни со слова «статистика» — покажу отчёт</p>
+
+      {photo ? (
+        <div className="flex items-center gap-2">
+          <img src={photo.forJob} alt="" className="w-12 h-16 object-cover rounded-lg border border-slate-200" />
+          <span className="text-xs text-slate-500 flex-1">Фото заказ-наряда</span>
+          <button onClick={() => setPhoto(null)} className="text-slate-400 hover:text-red-500 p-1"><X size={16} /></button>
+        </div>
+      ) : (
+        <button onClick={() => photoRef.current?.click()}
+          className="w-full h-10 rounded-xl border border-dashed border-slate-300 bg-white text-xs font-bold text-slate-600 flex items-center justify-center gap-2">
+          <Camera size={16} /> Фото заказ-наряда
+        </button>
+      )}
+      <input ref={photoRef} type="file" accept="image/*" onChange={handlePhoto} className="hidden" />
+
+      <button onClick={run} disabled={busy || !ready}
+        className={`btn-accent ${busy || !ready ? 'opacity-50' : ''}`}>
         {busy ? 'Разбираю…' : 'Заполнить форму'}
       </button>
       {error && <p className="text-xs text-red-500">{error}</p>}
@@ -419,7 +448,8 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
   const createClient = (name, baseId) => { const c = onAddClient(name, baseId); setClientId(c.id); setShowModal(false); };
 
   // Заполнение формы ответом агента: перезаписываем только то, что он распознал
-  const applyParsed = (r) => {
+  const applyParsed = (r, photo) => {
+    if (photo) setPhotos(prev => [...prev, photo].slice(0, 5));
     setClientId(r.clientId);
     setComplexIds(r.complexIds);
     setComplexPrices(r.complexPrices);

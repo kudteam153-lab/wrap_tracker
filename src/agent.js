@@ -1,15 +1,29 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-// Разбор голосовой/текстовой фразы в поля формы новой работы.
+// Разбор голосовой/текстовой фразы и фото заказ-наряда в поля формы новой работы.
 // Ключ хранится только в localStorage этого устройства и уходит напрямую в api.anthropic.com.
 
-const MODEL = 'claude-sonnet-5-5';
+// У Haiku нет серверного переключения на резервную модель при отказе — запросы без fallbacks
+const MODEL = 'claude-haiku-5-5';
 
 const DICTATION_NOTE = `Текст получен голосовой диктовкой клавиатуры телефона и содержит ошибки распознавания: слова, похожие по звучанию, слитые или разорванные слова («а термалка» → «атермалка»), латинские марки кириллицей («кия рио» → Kia Rio, «хавал» → Haval, «джили» → Geely), числа словами или с ошибками («четыре пятьсот» → 4500, «пол тора» → 1,5). Восстанавливай смысл по звучанию, сверяясь со справочниками. Термины мастера: «бронь», «броня» — полиуретановая плёнка; «атермалка» — атермальная плёнка; «тонер» — тонировка; «шумка» — шумоизоляция; «ПТФ», «птф» — противотуманные фары; «чёрный глянец», «блэк» — чёрный глянец; «арматурка» — снятие/установка деталей.`;
 
-const SYSTEM = `Ты помощник оклейщика авто. Мастер надиктовал, что сделал. Разложи фразу по полям заказ-наряда.
+const PHOTO_NOTE = `Если приложено фото — это бланк «Задание на ремонтные работы по заказ-наряду № ЗН-60 от 16.04.2026».
+- orderNumber — номер из заголовка как есть («ЗН-60»). startDT — дата из заголовка, время 09:00.
+- endDT — поле «Выдача», если заполнено: «18.04 обед» → 13:00, «день» → 15:00, «вечер» → 18:00, «утро» → 10:00; год как у заказ-наряда. Пусто → "".
+- car — поле «Модель» («Tenet T8 T8» → «Tenet T8»). VIN, госномер, реквизиты ИП и фамилии ответственных никуда не записывай.
+- Работы — строки таблиц «Ремонтные работы», «Если подетально», «Дополнительные работы», включая дописанное от руки («+ ПТФ», «+ чёрный глянец бампера»). Напечатанные в каждом бланке «Арматурка» и «Мойка» без отметок не считай работами.
+- Пакеты вида «Оклейка "Максимум" (капот, бампер, …)», «Оклейка зон риска (…)» или просто перечень деталей сопоставляй с комплексами, сравнивая состав со списком в note. Детали, которых нет в выбранном комплексе, добавляй элементами.
+- Колонка «ЗП» обычно пустая; цены из бланка не бери, если их нет.
+- «Исполнитель» — имена мастеров. share = 1 / число разных имён у основной работы (двое → 0.5, трое → 0.333). «—и—», «—//—» значит те же исполнители, что строкой выше.
+- Рукописный текст может быть неразборчив — восстанавливай по смыслу и прайсу, сомнительное отмечай в notes.
+Если вместе с фото есть фраза мастера — она уточняет и дополняет бланк и важнее его.`;
+
+const SYSTEM = `Ты помощник оклейщика авто. Мастер надиктовал, что сделал, и/или сфотографировал заказ-наряд. Разложи это по полям формы.
 
 ${DICTATION_NOTE}
+
+${PHOTO_NOTE}
 
 Правила:
 - clientId, id комплексов и id элементов бери ТОЛЬКО из переданных справочников. Элементы и комплексы ищи в прайсе выбранного заказчика.
@@ -70,7 +84,8 @@ const nowLocal = () => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())} (${wd})`;
 };
 
-export async function parseJob(text, { apiKey, clients, profiles, cars }) {
+// image: { data: base64 без префикса, mediaType } — фото заказ-наряда, необязательно
+export async function parseJob(text, { apiKey, clients, profiles, cars, image }) {
   const anthropic = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
 
   const priceLists = clients.map(c => {
@@ -82,12 +97,14 @@ export async function parseJob(text, { apiKey, clients, profiles, cars }) {
     };
   });
 
-  const response = await anthropic.beta.messages.create({
+  const prompt = `Заказчики и прайсы:\n${JSON.stringify(priceLists)}\n\nСейчас: ${nowLocal()}\n\n`
+    + (text ? `Фраза мастера:\n${text}` : 'Фраза мастера: нет, только фото заказ-наряда.');
+
+  const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 16000,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: schema(clients.map(c => c.id)) } },
+    // Бланк с рукописными пометками требует больше внимания, чем короткая фраза
+    output_config: { effort: image ? 'medium' : 'low', format: { type: 'json_schema', schema: schema(clients.map(c => c.id)) } },
     system: [
       { type: 'text', text: SYSTEM },
       // Справочники стабильны между запросами — кэшируем вместе с инструкцией
@@ -95,11 +112,13 @@ export async function parseJob(text, { apiKey, clients, profiles, cars }) {
     ],
     messages: [{
       role: 'user',
-      content: `Заказчики и прайсы:\n${JSON.stringify(priceLists)}\n\nСейчас: ${nowLocal()}\n\nФраза мастера:\n${text}`,
+      content: image
+        ? [{ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } }, { type: 'text', text: prompt }]
+        : prompt,
     }],
   });
 
-  if (response.stop_reason === 'refusal') throw new Error('Модель отказалась разбирать фразу');
+  if (response.stop_reason === 'refusal') throw new Error('Модель отказалась разбирать запрос');
   if (response.stop_reason === 'max_tokens') throw new Error('Ответ модели обрезан');
   const block = response.content.find(b => b.type === 'text');
   if (!block) throw new Error('Пустой ответ модели');
@@ -158,11 +177,9 @@ const STATS_SYSTEM = `Мастер по оклейке авто спрашива
 
 export async function parseStatsQuery(text, { apiKey, clients }) {
   const anthropic = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-  const response = await anthropic.beta.messages.create({
+  const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 4000,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
     output_config: {
       effort: 'low',
       format: {
