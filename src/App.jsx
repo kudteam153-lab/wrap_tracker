@@ -778,9 +778,14 @@ function JobForm({ clients, profiles, editJob, onSave, onUpdate, onCancelEdit, o
 
 // ============ ЭКРАН 2: Список ============
 function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  // По умолчанию — работы текущего месяца
+  const [from, setFrom] = useState(() => monthRange().from);
+  const [to, setTo] = useState(() => monthRange().to);
   const [carFilter, setCarFilter] = useState('');
+  const [profileIds, setProfileIds] = useState([]); // пусто — все прайсы
+  const toggleProfile = (id) => setProfileIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+  const month = monthRange();
+  const isDefault = from === month.from && to === month.to && !carFilter && !profileIds.length;
   const [viewPhoto, setViewPhoto] = useState(null); // { photos: [], index: 0 }
 
   const uniqueCars = useMemo(() => [...new Set(jobs.map(j => j.car))].sort(), [jobs]);
@@ -791,9 +796,10 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
       if (from && d < from) return false;
       if (to && d > to) return false;
       if (carFilter && j.car !== carFilter) return false;
+      if (profileIds.length && !profileIds.includes(j.priceProfileId)) return false;
       return true;
     }).sort((a, b) => b.startDT.localeCompare(a.startDT));
-  }, [jobs, from, to, carFilter]);
+  }, [jobs, from, to, carFilter, profileIds]);
 
   const cName = (id) => clients.find(c => c.id === id)?.name || '—';
   const cxName = (j) => j.lines
@@ -830,10 +836,26 @@ function JobList({ jobs, clients, profiles, onDelete, onEdit }) {
           <option value="">Все авто</option>
           {uniqueCars.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
-        {(from || to || carFilter) && (
-          <button onClick={() => { setFrom(''); setTo(''); setCarFilter(''); }}
-            className="text-xs text-slate-400 underline">Сбросить</button>
+        {profiles.length > 1 && (
+          <div className="flex gap-1.5 flex-wrap">
+            <button onClick={() => setProfileIds([])}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${!profileIds.length ? 'bg-black text-white border-black' : 'bg-white text-slate-600 border-slate-200'}`}>Все прайсы</button>
+            {profiles.map(p => (
+              <button key={p.id} onClick={() => toggleProfile(p.id)}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${profileIds.includes(p.id) ? 'bg-black text-white border-black' : 'bg-white text-slate-600 border-slate-200'}`}>{p.name}</button>
+            ))}
+          </div>
         )}
+        <div className="flex gap-4">
+          {(from || to) && (
+            <button onClick={() => { setFrom(''); setTo(''); }}
+              className="text-xs text-slate-400 underline">За всё время</button>
+          )}
+          {!isDefault && (
+            <button onClick={() => { setFrom(month.from); setTo(month.to); setCarFilter(''); setProfileIds([]); }}
+              className="text-xs text-slate-400 underline">Сбросить</button>
+          )}
+        </div>
       </div>
 
       {filtered.length === 0 ? (
@@ -955,10 +977,12 @@ const monthRange = () => {
   return { from: isoDay(new Date(d.getFullYear(), d.getMonth(), 1)), to: isoDay(new Date(d.getFullYear(), d.getMonth() + 1, 0)) };
 };
 
-function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSettings }) {
+function Stats({ jobs, clients, profiles, apiKey, request, onRequestHandled, onOpenSettings }) {
   const [period, setPeriod] = useState('month');
   // Свой фильтр: { from, to, clientIds, label } — задаётся голосом или вручную
   const [filter, setFilter] = useState(null);
+  // Фильтр по прайсам: пустой массив — все
+  const [profileIds, setProfileIds] = useState([]);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -990,8 +1014,9 @@ function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSetting
 
   const { filtered, chartData, totalRevenue, jobsCount, avgCheck, avgPerDay } = useMemo(() => {
     let filtered, group;
+    const byProfile = profileIds.length ? jobs.filter(j => profileIds.includes(j.priceProfileId)) : jobs;
     if (filter) {
-      filtered = jobs.filter(j => {
+      filtered = byProfile.filter(j => {
         const d = j.startDT.slice(0, 10);
         return d >= filter.from && d <= filter.to && (!filter.clientIds.length || filter.clientIds.includes(j.clientId));
       });
@@ -1005,7 +1030,7 @@ function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSetting
       else if (period === 'month') { start.setMonth(now.getMonth() - 6); group = 'month'; }
       else { start.setFullYear(now.getFullYear() - 3); group = 'year'; }
       const startIso = start.toISOString().slice(0, 10);
-      filtered = jobs.filter(j => j.startDT.slice(0, 10) >= startIso);
+      filtered = byProfile.filter(j => j.startDT.slice(0, 10) >= startIso);
     }
 
     const groups = {};
@@ -1027,7 +1052,7 @@ function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSetting
     const avgCheck = jobsCount ? totalRevenue / jobsCount : 0;
     const avgPerDay = totalRevenue / (uniqueDays.size || 1);
     return { filtered, chartData, totalRevenue, jobsCount, avgCheck, avgPerDay };
-  }, [jobs, period, filter]);
+  }, [jobs, period, filter, profileIds]);
 
   const byClient = useMemo(() => {
     const m = {};
@@ -1038,6 +1063,18 @@ function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSetting
     return Object.entries(m).map(([id, r]) => ({ name: clients.find(c => c.id === id)?.name || 'Удалённый заказчик', ...r }))
       .sort((a, b) => b.sum - a.sum);
   }, [filtered, clients]);
+
+  const byPriceProfile = useMemo(() => {
+    const m = {};
+    filtered.forEach(j => {
+      const r = m[j.priceProfileId] || (m[j.priceProfileId] = { sum: 0, count: 0 });
+      r.sum += j.finalTotal; r.count += 1;
+    });
+    return Object.entries(m).map(([id, r]) => ({ id, name: profiles.find(p => p.id === id)?.name || 'Удалённый прайс', ...r }))
+      .sort((a, b) => b.sum - a.sum);
+  }, [filtered, profiles]);
+
+  const toggleProfile = (id) => setProfileIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
 
   const byItem = useMemo(() => {
     const m = {};
@@ -1107,6 +1144,20 @@ function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSetting
         </div>
       )}
 
+      {profiles.length > 1 && (
+        <div className="space-y-1.5">
+          <div className="label-upper">Прайс</div>
+          <div className="flex gap-1.5 flex-wrap">
+            <button onClick={() => setProfileIds([])}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${!profileIds.length ? 'bg-black text-white border-black' : 'bg-white text-slate-600 border-slate-200'}`}>Все</button>
+            {profiles.map(p => (
+              <button key={p.id} onClick={() => toggleProfile(p.id)}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${profileIds.includes(p.id) ? 'bg-black text-white border-black' : 'bg-white text-slate-600 border-slate-200'}`}>{p.name}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white p-3 rounded-2xl border border-slate-200">
         <div className="text-xs text-slate-400">Доход</div>
         <div className="text-3xl font-extrabold tracking-tight">{fmt(totalRevenue)}</div>
@@ -1146,6 +1197,18 @@ function Stats({ jobs, clients, apiKey, request, onRequestHandled, onOpenSetting
           </ResponsiveContainer>
         )}
       </div>
+
+      {byPriceProfile.length > 1 && (
+        <div className="bg-white p-3 rounded-2xl border border-slate-200">
+          <div className="font-bold text-sm mb-2">По прайсам</div>
+          {byPriceProfile.map(r => (
+            <div key={r.id} className="flex justify-between text-sm py-1.5 border-t border-slate-100 first:border-t-0">
+              <span>{r.name} <span className="text-xs text-slate-400">· {r.count}</span></span>
+              <span className="font-mono font-semibold">{fmt(r.sum)}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {byClient.length > 1 && (
         <div className="bg-white p-3 rounded-2xl border border-slate-200">
@@ -1608,7 +1671,7 @@ export default function App() {
       )}
       {tab === 'list' && <JobList jobs={jobs} clients={clients} profiles={profiles}
         onDelete={deleteJob} onEdit={startEdit} />}
-      {tab === 'stats' && <Stats jobs={jobs} clients={clients} apiKey={apiKey}
+      {tab === 'stats' && <Stats jobs={jobs} clients={clients} profiles={profiles} apiKey={apiKey}
         request={statsRequest} onRequestHandled={() => setStatsRequest(null)}
         onOpenSettings={() => setTab('settings')} />}
       {tab === 'settings' && <SettingsScreen profiles={profiles} clients={clients}
